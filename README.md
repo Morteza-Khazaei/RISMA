@@ -10,7 +10,8 @@ RISMA is a Python library to download in-situ data from [AAFC](https://agricultu
 
 * RISMA is licensed under the terms of GNU GPL 2. Read COPYING for more info
 
-Copyright Morteza Khazaei - 2021
+* Copyright Morteza Khazaei - 2021
 
 # How to use
-pip install RISMA
+
+* pip install RISMA
