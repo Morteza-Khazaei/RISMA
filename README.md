@@ -14,4 +14,4 @@ Thank you for downloading RISMA
 
 # How to use
 
-* pip install RISMA
+* py -m pip install setup.py
