@@ -2,7 +2,7 @@
 
 Thank you for downloading RISMA
 
-RISMA is a Python library to download in-situ data from [AAFC](https://agriculture.canada.ca/SoilMonitoringStations/index-en.html) server
+* RISMA is a Python library to download in-situ data from [AAFC](https://agriculture.canada.ca/SoilMonitoringStations/index-en.html) server
 
 * For more information on the data and the networks, please consult the [RISMA Network Metadata](https://agriculture.canada.ca/SoilMonitoringStations/files/RISMA_Network_Metadata.pdf) report.
 
