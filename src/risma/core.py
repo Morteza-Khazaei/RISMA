@@ -73,10 +73,10 @@ class RISMA:
                 for sensor_id in self.sensor_ids:
                     if sensor_id is None:
                         # Case without sensor (e.g., "Soil Moisture.Soil water content 5 cm depth@RISMA_MB5")
-                        dataset_name = f"Soil Moisture.Soil water content {depth}@{station_id}"
+                        dataset_name = f"Soil Moisture.Soil water content {depth} depth@{station_id}"
                     else:
                         # Case with sensor (e.g., "Soil Moisture.Soil water content 0 to 5 cm depth sensor 1@RISMA_MB5")
-                        dataset_name = f"Soil Moisture.Soil water content {depth} sensor {sensor_id}@{station_id}"
+                        dataset_name = f"Soil Moisture.Soil water content {depth} depth sensor {sensor_id}@{station_id}"
                     dataset_names.append(dataset_name)
         return dataset_names
 
