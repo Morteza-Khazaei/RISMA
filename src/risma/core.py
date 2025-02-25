@@ -8,12 +8,109 @@ from urllib.parse import quote
 
 
 class RISMA:
+    # Dictionary of dataset names from your input
+    CATEGORIZED_DATA = {
+        'Air Temp': {'Air temperature': 'Air Temp.Air temperature'},
+        'Precip Total': {'Precipitation totals': 'Precip Total.Precipitation totals'},
+        'Rel Humidity': {'Relative humidity': 'Rel Humidity.Relative humidity'},
+        'Soil Moisture': {
+            '0 to 5 cm': {
+                'average': 'Soil Moisture.Soil water content 0 to 5 cm depth',
+                'sensor': {
+                    '1': 'Soil Moisture.Soil water content 0 to 5 cm depth sensor 1',
+                    '2': 'Soil Moisture.Soil water content 0 to 5 cm depth sensor 2',
+                    '3': 'Soil Moisture.Soil water content 0 to 5 cm depth sensor 3'
+                }
+            },
+            '5 cm': {
+                'average': 'Soil Moisture.Soil water content 5 cm depth',
+                'sensor': {
+                    '1': 'Soil Moisture.Soil water content 5 cm depth sensor 1',
+                    '2': 'Soil Moisture.Soil water content 5 cm depth sensor 2',
+                    '3': 'Soil Moisture.Soil water content 5 cm depth sensor 3'
+                }
+            },
+            '20 cm': {
+                'average': 'Soil Moisture.Soil water content 20 cm depth',
+                'sensor': {
+                    '1': 'Soil Moisture.Soil water content 20 cm depth sensor 1',
+                    '2': 'Soil Moisture.Soil water content 20 cm depth sensor 2',
+                    '3': 'Soil Moisture.Soil water content 20 cm depth sensor 3'
+                }
+            },
+            '50 cm': {
+                'average': 'Soil Moisture.Soil water content 50 cm depth',
+                'sensor': {
+                    '1': 'Soil Moisture.Soil water content 50 cm depth sensor 1',
+                    '2': 'Soil Moisture.Soil water content 50 cm depth sensor 2',
+                    '3': 'Soil Moisture.Soil water content 50 cm depth sensor 3'
+                }
+            },
+            '100 cm': {
+                'average': 'Soil Moisture.Soil water content 100 cm depth',
+                'sensor': {
+                    '1': 'Soil Moisture.Soil water content 100 cm depth sensor 1',
+                    '2': 'Soil Moisture.Soil water content 100 cm depth sensor 2',
+                    '3': 'Soil Moisture.Soil water content 100 cm depth sensor 3'
+                }
+            }
+        },
+        'Soil temperature': {
+            '0 to 5 cm': {
+                'average': 'Soil temperature.Soil temperature 0 to 5 cm depth',
+                'sensor': {
+                    '1': 'Soil temperature.Soil temperature 0 to 5 cm depth sensor 1',
+                    '2': 'Soil temperature.Soil temperature 0 to 5 cm depth sensor 2',
+                    '3': 'Soil temperature.Soil temperature 0 to 5 cm depth sensor 3'
+                }
+            },
+            '5 cm': {
+                'average': 'Soil temperature.Soil temperature 5 cm depth',
+                'sensor': {
+                    '1': 'Soil temperature.Soil temperature 5 cm depth sensor 1',
+                    '2': 'Soil temperature.Soil temperature 5 cm depth sensor 2',
+                    '3': 'Soil temperature.Soil temperature 5 cm depth sensor 3'
+                }
+            },
+            '20 cm': {
+                'average': 'Soil temperature.Soil temperature 20 cm depth',
+                'sensor': {
+                    '1': 'Soil temperature.Soil temperature 20 cm depth sensor 1',
+                    '2': 'Soil temperature.Soil temperature 20 cm depth sensor 2',
+                    '3': 'Soil temperature.Soil temperature 20 cm depth sensor 3'
+                }
+            },
+            '50 cm': {
+                'average': 'Soil temperature.Soil temperature 50 cm depth',
+                'sensor': {
+                    '1': 'Soil temperature.Soil temperature 50 cm depth sensor 1',
+                    '2': 'Soil temperature.Soil temperature 50 cm depth sensor 2',
+                    '3': 'Soil temperature.Soil temperature 50 cm depth sensor 3'
+                }
+            },
+            '100 cm': {
+                'average': 'Soil temperature.Soil temperature 100 cm depth',
+                'sensor': {
+                    '1': 'Soil temperature.Soil temperature 100 cm depth sensor 1',
+                    '2': 'Soil temperature.Soil temperature 100 cm depth sensor 2',
+                    '3': 'Soil temperature.Soil temperature 100 cm depth sensor 3'
+                }
+            }
+        },
+        'Wind Dir': {'Wind direction': 'Wind Dir.Wind direction'},
+        'Wind Vel': {
+            'Wind speed (maximum)': 'Wind Vel.Wind speed (maximum)',
+            'Wind speed (minimum)': 'Wind Vel.Wind speed (minimum)'
+        },
+        'Voltage': {'Battery charge': 'Voltage.Battery charge'}
+    }
+
     def __init__(self, date_range, start_time, end_time, time_zone, calendar, interval, step, 
                  export_format, time_aligned, round_data, include_grade_codes, include_approval_levels, 
                  include_qualifiers, include_interpolation_types, calculation, unit_id, 
-                 station_ids, sensor_ids, depths, output_dir):
+                 station_id, dataset_names, depths=None, sensor_numbers=None, output_dir="", headers=None):
         """
-        Initialize the SoilMoistureDownloader with all adjustable URL parameters for BulkExport.
+        Initialize the SoilMoistureDownloader with adjustable parameters for BulkExport.
         
         :param date_range: Date range type (e.g., "Custom")
         :param start_time: Start date and time in 'YYYY-MM-DD HH:MM' format (e.g., "2010-01-01 00:00")
@@ -31,10 +128,12 @@ class RISMA:
         :param include_interpolation_types: Include interpolation types (e.g., "False")
         :param calculation: Calculation type for all datasets (e.g., "Instantaneous")
         :param unit_id: Unit ID for all datasets (e.g., 147)
-        :param station_ids: List of station identifiers (e.g., ["RISMA_MB5"])
-        :param sensor_ids: List of sensor identifiers (e.g., ["1", "2", "3", None])
-        :param depths: List of depth values (e.g., ["0 to 5 cm", "5 cm"])
+        :param station_id: Station identifier (e.g., "RISMA_MB5")
+        :param dataset_names: List of dataset categories (e.g., ["Soil Moisture", "Air Temp"])
+        :param depths: List of depth values (e.g., ["5 cm", "20 cm"]) or None for non-depth datasets
+        :param sensor_numbers: List of sensor numbers (e.g., ["1", "2"]); if empty or None, downloads average
         :param output_dir: Directory to save the downloaded CSV file
+        :param headers: Optional dictionary of HTTP headers (e.g., {"Authorization": "Bearer TOKEN"})
         """
         self.base_url = "https://agrifood.aquaticinformatics.net/Export/BulkExport"
         self.date_range = date_range
@@ -53,10 +152,12 @@ class RISMA:
         self.include_interpolation_types = include_interpolation_types
         self.calculation = calculation
         self.unit_id = unit_id
-        self.station_ids = station_ids
-        self.sensor_ids = sensor_ids
-        self.depths = depths
+        self.station_id = station_id
+        self.dataset_names = dataset_names
+        self.depths = depths if depths is not None else []
+        self.sensor_numbers = sensor_numbers if sensor_numbers is not None else []
         self.output_dir = self.make_dir(output_dir)
+        self.headers = headers or {}
 
     def make_dir(self, output_dir):
         """Create output directory if it doesn't exist."""
@@ -65,23 +166,51 @@ class RISMA:
         return output_dir
 
     def construct_dataset_names(self):
-        """Generate dataset names from station_ids, sensor_ids, and depths."""
+        """Construct dataset names using the dictionary and input parameters."""
         dataset_names = []
-        # Use nested loops to combine all possible station, sensor, and depth values
-        for station_id in self.station_ids:
+
+        for dataset_name in self.dataset_names:
+            dataset_dict = self.CATEGORIZED_DATA.get(dataset_name)
+            if not dataset_dict:
+                print(f"Warning: Invalid dataset_name: {dataset_name}")
+                continue
+
+            # Non-soil datasets (no depth or sensor)
+            if dataset_name not in ['Soil Moisture', 'Soil temperature']:
+                for measurement in dataset_dict.values():
+                    if isinstance(measurement, str):
+                        dataset_names.append(f"{measurement}@{self.station_id}")
+                    elif isinstance(measurement, dict):
+                        for sub_value in measurement.values():
+                            dataset_names.append(f"{sub_value}@{self.station_id}")
+                continue
+
+            # Soil-related datasets (require depth)
+            if not self.depths:
+                print(f"Warning: No depths specified for {dataset_name}; skipping")
+                continue
+
             for depth in self.depths:
-                for sensor_id in self.sensor_ids:
-                    if sensor_id is None:
-                        # Case without sensor (e.g., "Soil Moisture.Soil water content 5 cm depth@RISMA_MB5")
-                        dataset_name = f"Soil Moisture.Soil water content {depth} depth@{station_id}"
-                    else:
-                        # Case with sensor (e.g., "Soil Moisture.Soil water content 0 to 5 cm depth sensor 1@RISMA_MB5")
-                        dataset_name = f"Soil Moisture.Soil water content {depth} depth sensor {sensor_id}@{station_id}"
-                    dataset_names.append(dataset_name)
+                depth_dict = dataset_dict.get(depth)
+                if not depth_dict:
+                    print(f"Warning: Invalid depth {depth} for {dataset_name}; skipping")
+                    continue
+
+                if not self.sensor_numbers:  # Empty or None means average
+                    dataset_names.append(f"{depth_dict['average']}@{self.station_id}")
+                else:  # Specific sensors
+                    sensor_dict = depth_dict.get('sensor', {})
+                    for sensor in self.sensor_numbers:
+                        sensor_name = sensor_dict.get(sensor)
+                        if sensor_name:
+                            dataset_names.append(f"{sensor_name}@{self.station_id}")
+                        else:
+                            print(f"Warning: Invalid sensor_number {sensor} for {dataset_name} at {depth}")
+
         return dataset_names
 
     def construct_url(self):
-        """Construct the URL with all parameters, applying calculation and unit_id to all datasets."""
+        """Construct the URL with all parameters."""
         params = {
             "DateRange": self.date_range,
             "StartTime": self.start_time.strftime('%Y-%m-%d %H:%M'),
@@ -97,57 +226,46 @@ class RISMA:
             "IncludeApprovalLevels": self.include_approval_levels,
             "IncludeQualifiers": self.include_qualifiers,
             "IncludeInterpolationTypes": self.include_interpolation_types,
-            "_": int(time.time() * 1000)  # Current timestamp in milliseconds
+            "_": int(time.time() * 1000)
         }
 
-        # Generate dataset names and add to params
         dataset_names = self.construct_dataset_names()
         for i, dataset_name in enumerate(dataset_names):
             params[f"Datasets[{i}].DatasetName"] = dataset_name
             params[f"Datasets[{i}].Calculation"] = self.calculation
             params[f"Datasets[{i}].UnitId"] = self.unit_id
 
-        # Construct URL with URL-encoded parameters
         query_string = "&".join(f"{key}={quote(str(value))}" for key, value in params.items())
-        return f"{self.base_url}?{query_string}"
+        url = f"{self.base_url}?{query_string}"
+        print(f"Generated URL: {url}")  # Debug print
+        return url
 
     def download(self, filename="soil_moisture_data.csv"):
         """Download the data from the constructed URL and save as CSV."""
         url = self.construct_url()
         output_path = os.path.join(self.output_dir, filename)
 
-        # Make the HTTP request
-        response = requests.get(url)
-        
+        response = requests.get(url, headers=self.headers)
         if response.status_code == 200:
             content_type = response.headers.get('Content-Type', '').lower()
-            
             if 'zip' in content_type:
-                # Handle compressed response
                 zip_content = io.BytesIO(response.content)
                 with zipfile.ZipFile(zip_content, 'r') as zip_file:
-                    # Assume one CSV file in the zip
                     csv_file_name = zip_file.namelist()[0]
                     with zip_file.open(csv_file_name) as csv_file:
                         with open(output_path, "wb") as f:
                             f.write(csv_file.read())
                 print(f"Data downloaded and extracted to {output_path}")
-            
             elif 'csv' in content_type:
-                # Handle uncompressed CSV response
                 with open(output_path, "wb") as f:
                     f.write(response.content)
                 print(f"Data downloaded to {output_path}")
-            
             else:
-                raise ValueError(f"Unexpected content type: {content_type}")
-        
+                print(f"Error: Unexpected content type: {content_type}")
         else:
-            raise Exception(f"Failed to download data: HTTP {response.status_code}")
+            print(f"Error: Failed to download data: HTTP {response.status_code}")
+            print(f"Server response: {response.text}")
 
     def execute(self, filename="soil_moisture_data.csv"):
         """Execute the download process."""
-        try:
-            self.download(filename)
-        except Exception as e:
-            print(f"Error during download: {str(e)}")
+        self.download(filename)
