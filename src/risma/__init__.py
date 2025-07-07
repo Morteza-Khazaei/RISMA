@@ -1,1 +1,1 @@
-from .core import RISMA
+from .main import AquariusWebPortal
