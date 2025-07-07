@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "RISMA"
+dynamic = ["version", "readme"]
+description = "Agriculture and Agri-Food Canada (AAFC)"
+authors = [
+    {name = "Morteza Khazaei", email = "morteza.khazaei@usherbrooke.ca"},
+]
+license = {text = "MIT license"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "requests",
+    "pandas",
+    "lxml",
+    "matplotlib",
+]
+
+[project.urls]
+Homepage = "https://github.com/Morteza-Khazaei/RISMA"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.dynamic]
+version = {file = "VERSION"}
+readme = {file = "README.md", content-type = "text/x-rst"}
