@@ -1,17 +1,55 @@
-# Welcome to RISMA library
+# RISMA: Reproducible In Situ Microscopy Analysis
 
-Thank you for downloading RISMA
+This repository contains the code and resources for RISMA, a framework designed to facilitate reproducible analysis of in situ microscopy data.
 
-* RISMA is a Python library to download in-situ data from [AAFC](https://agriculture.canada.ca/SoilMonitoringStations/index-en.html) server
+## Overview
 
-* For more information on the data and the networks, please consult the [RISMA Network Metadata](https://agriculture.canada.ca/SoilMonitoringStations/files/RISMA_Network_Metadata.pdf) report.
+RISMA aims to address the challenges of reproducibility in microscopy by providing a structured and automated approach to data processing, analysis, and visualization. It leverages modern computational tools and best practices to ensure that scientific findings can be easily verified and built upon.
 
-# License
+## Getting Started
 
-* RISMA is licensed under the terms of GNU GPL 2. Read COPYING for more info
+To get started with RISMA, follow the steps below.
 
-* Copyright Morteza Khazaei - 2021
+### Prerequisites
 
-# How to use
+*   Python 3.8 or higher
+*   Jupyter Notebook or JupyterLab
+*   Git
 
-* py -m pip install setup.py
+### Installation
+
+1.  **Clone the repository:**
+
+    ```bash
+    git clone https://github.com/morteza-khazaei/RISMA.git
+    cd RISMA
+    ```
+
+2.  **Create a virtual environment (recommended):**
+
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # On Windows: `venv\Scripts\activate`
+    ```
+
+3.  **Install dependencies:**
+
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+4. **Install RISMA:**
+
+    ```bash
+    pip install .
+    ```
+
+### Running the Tutorial
+
+The `tutorial.ipynb` notebook provides a comprehensive guide to using RISMA. To run it:
+
+1.  **Start Jupyter:**
+
+    ```bash
+    jupyter notebook
+    
