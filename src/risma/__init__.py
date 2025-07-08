@@ -1,1 +1,1 @@
-from .main import AquariusWebPortal
+from .core import AquariusWebPortal
