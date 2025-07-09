@@ -8,7 +8,6 @@ __pycache__/
 
 # Distribution / packaging
 .Python
-dataset/
 build/
 develop-eggs/
 dist/
@@ -154,4 +153,6 @@ dmypy.json
 cython_debug/
 
 # Drop data
-./data
+# Ignore downloaded data folders from the CLI
+data/
+dataset/
