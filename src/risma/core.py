@@ -337,13 +337,16 @@ class AquariusWebPortal:
             df["param"] = df.dset_name.apply(lambda v: v.split("@")[0].split(".")[0])
             df["label"] = df.dset_name.apply(lambda v: v.split("@")[0].split(".")[1])
         
-        # Filter stations if roi is provided
-        if isinstance(stations, str):
-            df = df[df.loc_id == stations]
-        elif isinstance(stations, list):
-            df = df[df.loc_id.isin(stations)]
+        # Filter df if stations is not None
+        if stations is not None:
+            if isinstance(stations, str):
+                df = df[df.loc_id == stations]
+            elif isinstance(stations, list):
+                df = df[df.loc_id.isin(stations)]
+            else:
+                raise Exception('stations must be a string or a list of strings.')
         else:
-            raise ValueError("roi must be a string or a list of strings representing location folders.")
+            print("No stations provided! Skipping filtering by stations.")
         
         return df
 
