@@ -61,3 +61,65 @@ The `tutorial.ipynb` notebook provides a comprehensive guide to using RISMA. To 
     ```
 
 2.  **Open the `tutorial.ipynb` notebook:**
+
+## Usage
+
+### Command-Line Interface (CLI)
+
+The RISMA package includes a powerful command-line interface (CLI) for interacting with the data portal. After installation, you can use the `risma` command in your terminal.
+
+**Global Options:**
+
+*   `--server`: Specify the Aquarius server URL (defaults to `agrifood.aquaticinformatics.net`).
+*   `--verbose` or `-v`: Enable detailed output.
+
+You can get help on any command or subcommand by using the `--help` flag:
+
+```bash
+risma --help
+risma locations --help
+```
+
+#### `params` - List Available Parameters
+
+To see all parameters (e.g., "Air Temp", "Soil Moisture") available on the server:
+
+```bash
+risma params
+```
+
+#### `locations` - List Available Locations
+
+To list all monitoring stations. This command supports filtering by one or more station IDs, which can be provided as a comma-separated list or by using the option multiple times.
+
+```bash
+# List all stations
+risma locations
+
+# Filter by specific stations (e.g., RISMA_MB1 and RISMA_MB2)
+risma locations --stations RISMA_MB1,RISMA_MB2
+```
+
+#### `datasets` - List Available Datasets
+
+To find datasets based on various criteria like station, parameter, sensor, and depth.
+
+```bash
+risma datasets --stations RISMA_MB1 --param-names "Soil temperature" --depths "5 cm"
+```
+
+#### `download` - Download Data
+
+Download time-series data for one or more stations. The station ID (`--stations`) is required. If no date range is provided, it defaults to the last 7 days.
+
+**Example:** Download soil moisture and temperature data for station `RISMA_MB1` and save it in the `./my_data` directory.
+
+```bash
+risma download --stations RISMA_MB1 --param-names "Soil temperature" --param-names "Soil Moisture" -o ./my_data
+```
+
+**Example:** Download data for multiple stations for a specific date range.
+
+```bash
+risma download --stations RISMA_MB1 --stations RISMA_MB2 --start-date 2024-01-01 --end-date 2024-01-31
+```

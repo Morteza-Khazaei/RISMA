@@ -155,4 +155,4 @@ cython_debug/
 # Drop data
 # Ignore downloaded data folders from the CLI
 data/
-dataset/
+datasets/
