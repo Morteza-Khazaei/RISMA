@@ -98,10 +98,10 @@ def datasets(ctx, stations, param_names, sensors, depths):
         )
         
         datasets = portal.fetch_datasets(
-            param_names=list(param_names) if param_names else [],
-            stations=list(stations) if stations else [],
-            sensors=list(sensors) if sensors else [],
-            depths=list(depths) if depths else []
+            param_names=list(param_names) if param_names else ['Air Temp', 'Soil temperature', 'Soil Moisture'],
+            stations=list(stations) if stations else ["RISMA_MB1", "RISMA_MB2", "RISMA_MB3"],
+            sensors=list(sensors) if sensors else ['average'],
+            depths=list(depths) if depths else ['0 to 5 cm', '5 cm']
         )
         
         click.echo(f"\nAvailable datasets:")
