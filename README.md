@@ -38,13 +38,7 @@ To get started with RISMA, follow the steps below.
     source venv/bin/activate  # On Windows: `venv\Scripts\activate`
     ```
 
-3.  **Install dependencies:**
-
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-4. **Install RISMA:**
+3. **Install RISMA:**
 
     ```bash
     pip install .
