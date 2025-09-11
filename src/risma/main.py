@@ -17,11 +17,12 @@ import pandas as pd
 # Optional interactive UI support via questionary
 try:
     import questionary  # type: ignore
-    from questionary import Choice  # type: ignore
+    from questionary import Choice, Separator  # type: ignore
     HAS_QUESTIONARY = True
 except Exception:  # optional dependency
     questionary = None
     Choice = None
+    Separator = None
     HAS_QUESTIONARY = False
 
 from risma import AquariusWebPortal
@@ -43,6 +44,16 @@ class RISMASession:
         self.selected_end_date: Optional[datetime] = None
         self.selected_date_mode: Optional[str] = None  # 'custom' | 'last7' | 'entire'
         self.selected_output_dir: Optional[str] = None
+        # Export options
+        self.export_timezone: Optional[int] = 0
+        self.export_calendar: Optional[str] = "CALENDARYEAR"
+        self.export_interval: Optional[str] = "PointsAsRecorded"
+        self.export_step: Optional[int] = 1
+        self.export_time_aligned: Optional[bool] = True
+        self.export_round_data: Optional[bool] = True
+        self.export_calculation: Optional[str] = "Instantaneous"
+        self.export_format: Optional[str] = "csv"
+        self.export_extra_types: List[str] = []
         
         # Available data loaded as needed
         self.available_params: pd.DataFrame = pd.DataFrame()
@@ -92,6 +103,15 @@ class RISMASession:
         self.selected_end_date = None
         self.selected_date_mode = None
         self.selected_output_dir = None
+        self.export_timezone = 0
+        self.export_calendar = "CALENDARYEAR"
+        self.export_interval = "PointsAsRecorded"
+        self.export_step = 1
+        self.export_time_aligned = True
+        self.export_round_data = True
+        self.export_calculation = "Instantaneous"
+        self.export_format = "csv"
+        self.export_extra_types = []
 
 
 def _print_table(headers: List[str], rows: List[List[str]]):
@@ -177,34 +197,52 @@ def _interactive_select_params_with_questionary(params_df: pd.DataFrame) -> List
     return answer or []
 
 
-def _interactive_select_stations_with_questionary(loc_df: pd.DataFrame, prompt_filter: bool = True) -> List[str]:
-    """Use questionary to interactively select station IDs.
-    Returns list of loc_id.
+def _interactive_select_stations_with_questionary(loc_df: pd.DataFrame, prompt_filter: bool = False) -> List[str]:
+    """Use questionary to interactively select station IDs, grouped by province and
+    sorted by natural station ID order. Returns list of loc_id.
     """
     if not HAS_QUESTIONARY:
         return []
-    # Optional filter prompt
-    df = loc_df
-    if prompt_filter:
-        filt = questionary.text(
-            "Filter (substring in ID/Name), leave empty for all:", qmark="🔎"
-        ).ask() or ""
-        if filt:
-            mask = (
-                df.loc_id.astype(str).str.contains(filt, case=False, na=False)
-                | df.loc_name.astype(str).str.contains(filt, case=False, na=False)
-            )
-            df = df[mask]
-    choices = []
+
+    def natural_key(s: str):
+        import re as _re
+        return [int(t) if t.isdigit() else t.lower() for t in _re.findall(r"\d+|\D+", s or "")]
+
+    df = loc_df.copy()
+
+    # Group by province (fallback to 'Unknown') and sort province names
+    def _prov(val):
+        try:
+            return str(val) if pd.notna(val) and str(val).strip() else 'Unknown'
+        except Exception:
+            return 'Unknown'
+
+    if 'province' not in df.columns:
+        df['province'] = None
+
+    grouped = {}
     for _, row in df.iterrows():
-        lat = f"{row.lat:.4f}" if pd.notna(row.lat) else "N/A"
-        lon = f"{row.lon:.4f}" if pd.notna(row.lon) else "N/A"
-        province = getattr(row, 'province', 'N/A')
-        title = f"{row.loc_id} — {row.loc_name} ({row.loc_type}, {lat},{lon}, {province})"
-        choices.append(Choice(title=title, value=row.loc_id))
+        prov = _prov(row.get('province') if hasattr(row, 'get') else getattr(row, 'province', None))
+        grouped.setdefault(prov, []).append(row)
+
+    choices: List = []
+    for prov in sorted(grouped.keys(), key=lambda x: (x is None, str(x))):
+        rows = grouped[prov]
+        # Sort by natural station ID
+        rows_sorted = sorted(rows, key=lambda r: natural_key(str(r.loc_id)))
+        if Separator is not None:
+            choices.append(Separator(f"— {prov} —"))
+        for row in rows_sorted:
+            lat = f"{row.lat:.4f}" if pd.notna(row.lat) else "N/A"
+            lon = f"{row.lon:.4f}" if pd.notna(row.lon) else "N/A"
+            province = prov
+            title = f"{row.loc_id} — {row.loc_name} ({row.loc_type}, {lat},{lon}, {province})"
+            choices.append(Choice(title=title, value=row.loc_id))
+
     if not choices:
-        print("⚠️  No stations match the filter.")
+        print("⚠️  No stations available.")
         return []
+
     answer = questionary.checkbox(
         "Select stations (space to toggle, enter to confirm):",
         choices=choices,
@@ -283,13 +321,10 @@ def _auto_show_datasets_and_select_filters(session: RISMASession) -> bool:
             rows.append([str(ds.loc_id), str(ds.param), str(ds.label), str(dtype), str(sensor), str(depth), start, end])
         _print_table(headers, rows)
 
-        # Cache for download
+        # Cache for next steps
         session.selected_datasets = df_final
         save_session_state(session)
-
-        # Prompt for date range selection here as well
-        if not _interactive_select_date_range(session, df_final):
-            return False
+        print("\n💡 Next step: Configure export options and date range with 'export', then run 'download'")
         return True
     except Exception as e:
         print(f"❌ Error preparing datasets: {e}")
@@ -355,17 +390,8 @@ def _interactive_download_prompt(session: RISMASession) -> Optional[argparse.Nam
         f"Output directory:", default=default_dir, qmark="📁"
     ).ask() or default_dir
 
-    # Extra data types
-    extra = questionary.checkbox(
-        "Include extra data types (optional):",
-        choices=[
-            Choice("grade"),
-            Choice("approval"),
-            Choice("qualifier"),
-            Choice("interpolation_type"),
-        ],
-        qmark="➕",
-    ).ask() or []
+    # Extra data types: reuse previously selected in export step (avoid duplicate prompt)
+    extra = session.export_extra_types or []
 
     return argparse.Namespace(
         start_date=start_date,
@@ -386,8 +412,12 @@ def _interactive_select_date_range(session: RISMASession, datasets_df: Optional[
         "Select date range:",
         choices=[
             Choice(title="Last 7 days", value="last7"),
+            Choice(title="Last 30 days", value="days30"),
+            Choice(title="Last 6 months", value="months6"),
+            Choice(title="Last 1 year", value="years1"),
             Choice(title="Custom range", value="custom"),
             Choice(title="Entire period of record", value="entire"),
+            Choice(title="Overlapping period of record (intersection)", value="overlapping"),
         ],
         qmark="📅",
     ).ask()
@@ -396,20 +426,35 @@ def _interactive_select_date_range(session: RISMASession, datasets_df: Optional[
     if choice == "last7":
         end_date = datetime.now()
         start_date = end_date - timedelta(days=7)
+    elif choice == "days30":
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=30)
+    elif choice == "months6":
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=182)
+    elif choice == "years1":
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=365)
     elif choice == "custom":
         s = questionary.text("Start date (YYYY-MM-DD):", qmark="📅").ask()
+        st = questionary.text("Start time (HH:MM, default 00:00):", default="00:00", qmark="⏱").ask() or "00:00"
         e = questionary.text("End date (YYYY-MM-DD):", qmark="📅").ask()
+        et = questionary.text("End time (HH:MM, default 00:00):", default="00:00", qmark="⏱").ask() or "00:00"
         try:
-            start_date = datetime.strptime(s, "%Y-%m-%d") if s else None
-            end_date = datetime.strptime(e, "%Y-%m-%d") if e else None
+            start_date = datetime.strptime(f"{s} {st}", "%Y-%m-%d %H:%M") if s else None
+            end_date = datetime.strptime(f"{e} {et}", "%Y-%m-%d %H:%M") if e else None
         except Exception:
-            print("❌ Invalid date format.")
+            print("❌ Invalid date/time format.")
             return False
         if not start_date or not end_date or start_date > end_date:
             print("❌ Invalid custom date range.")
             return False
     elif choice == "entire":
         # Use per-dataset default start/end by leaving dates unset
+        start_date = None
+        end_date = None
+    elif choice == "overlapping":
+        # Server computes intersection across datasets; leave dates unset
         start_date = None
         end_date = None
 
@@ -419,8 +464,118 @@ def _interactive_select_date_range(session: RISMASession, datasets_df: Optional[
     save_session_state(session)
     if choice == 'entire':
         print("📅 Date range set: Entire period of record")
+    elif choice == 'overlapping':
+        print("📅 Date range set: Overlapping period of record (intersection)")
+    elif choice in ("days30", "months6", "years1"):
+        label = {
+            "days30": "Last 30 days",
+            "months6": "Last 6 months",
+            "years1": "Last 1 year",
+        }[choice]
+        print(f"📅 Date range set: {label}")
     else:
-        print(f"📅 Date range set: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+        # Show time if provided
+        def _fmt(dt: datetime) -> str:
+            return dt.strftime('%Y-%m-%d %H:%M') if (dt.hour or dt.minute) else dt.strftime('%Y-%m-%d')
+        print(f"📅 Date range set: {_fmt(start_date)} to {_fmt(end_date)}")
+    return True
+
+
+def _interactive_select_export_options(session: RISMASession) -> bool:
+    """Prompt for export options such as TimeZone, Calendar, Interval, etc., and persist them."""
+    if not HAS_QUESTIONARY:
+        print("❌ Interactive export options require 'questionary'. Install with: pip install questionary")
+        return False
+    # TimeZone friendly list
+    def _format_tz_label(offset: int) -> str:
+        names = { -10: "HST", -9: "AKST", -8: "PST", -7: "MST", -6: "CST", -5: "EST", 0: "UTC", 1: "CET", 2: "EET", 3: "MSK", 8: "CST(China)", 9: "JST", 10: "AEST", 12: "NZST" }
+        if offset == 0:
+            return "UTC"
+        sign = "+" if offset > 0 else "-"
+        abbr = names.get(offset)
+        return f"UTC{sign}{abs(offset)}" + (f" ({abbr})" if abbr else "")
+
+    def _tz_choices():
+        # Integer offsets typically supported by AQWP
+        offsets = list(range(-12, 15))
+        return [Choice(title=_format_tz_label(o), value=o) for o in offsets]
+
+    tz_choices = [Choice(title="Server default (undefined)", value=None)] + _tz_choices()
+    session.export_timezone = questionary.select(
+        "Time zone:",
+        choices=tz_choices,
+        default=(session.export_timezone if session.export_timezone is not None else None),
+        qmark="⏱ ",
+    ).ask()
+
+    # Calendar
+    calendars = [Choice("Server default (undefined)", None), "CALENDARYEAR", "CALENDARMONTH", "CALENDARWEEK", "CALENDARDAY"]
+    session.export_calendar = questionary.select(
+        "Calendar grouping:", choices=calendars, default=(session.export_calendar if session.export_calendar is not None else None), qmark="📅"
+    ).ask()
+
+    # Interval (align with API naming)
+    intervals = [Choice("Server default (undefined)", None), "PointsAsRecorded", "Hourly", "Daily", "Weekly", "Monthly"]
+    session.export_interval = questionary.select(
+        "Interval:", choices=intervals, default=(session.export_interval if session.export_interval is not None else None), qmark="⏲ "
+    ).ask()
+
+    # Step
+    step_text = questionary.text(
+        "Step (integer, leave empty for undefined):",
+        default=(str(session.export_step) if session.export_step is not None else ""),
+        qmark="➕",
+    ).ask()
+    try:
+        session.export_step = int(step_text) if step_text is not None and step_text != "" else None
+    except Exception:
+        session.export_step = None
+
+    # TimeAligned, RoundData
+    session.export_time_aligned = questionary.select(
+        "Time aligned?",
+        choices=[Choice("Server default (undefined)", None), Choice("True", True), Choice("False", False)],
+        default=(session.export_time_aligned if isinstance(session.export_time_aligned, bool) else None),
+        qmark="🧭",
+    ).ask()
+    session.export_round_data = questionary.select(
+        "Round data?",
+        choices=[Choice("Server default (undefined)", None), Choice("True", True), Choice("False", False)],
+        default=(session.export_round_data if isinstance(session.export_round_data, bool) else None),
+        qmark="⚙ ",
+    ).ask()
+
+    # Calculation
+    calcs = [Choice("Server default (undefined)", None), "Instantaneous", "Mean", "Sum", "Min", "Max"]
+    session.export_calculation = questionary.select(
+        "Calculation:", choices=calcs, default=(session.export_calculation if session.export_calculation is not None else None), qmark="🧮"
+    ).ask()
+
+    # Extra data types
+    session.export_extra_types = questionary.checkbox(
+        "Include extra data types (optional):",
+        choices=[
+            Choice("grade"),
+            Choice("approval"),
+            Choice("qualifier"),
+            Choice("interpolation_type"),
+        ],
+        qmark="➕",
+    ).ask() or []
+
+    # Export format choices
+    formats = [Choice("Server default (undefined)", None), "csv", "excel", "json"]
+    session.export_format = questionary.select(
+        "Export format:", choices=formats, default=(session.export_format if session.export_format is not None else None), qmark="📄"
+    ).ask()
+
+    # Output directory (move here to avoid prompting again during download)
+    default_dir = session.selected_output_dir or os.path.join(os.path.expanduser("~"), "RISMA_data")
+    session.selected_output_dir = questionary.text(
+        "Output directory:", default=default_dir, qmark="📁"
+    ).ask() or default_dir
+
+    save_session_state(session)
     return True
 
 
@@ -459,7 +614,12 @@ def run_wizard(session: RISMASession) -> None:
             print("❌ No datasets available for the chosen filters. Exiting.")
             return
 
-        # 4) Confirm and prompt download options
+        # 4) Export options + date range
+        if not handle_export_step(session, argparse.Namespace(list_only=False)):
+            print("❌ Export configuration not completed. Exiting.")
+            return
+
+        # 5) Confirm and prompt download options
         proceed = questionary.confirm(
             "Proceed to download with current selections?",
             default=True,
@@ -521,6 +681,15 @@ def load_session_state(session: RISMASession) -> None:
             session.selected_end_date = None
         session.selected_date_mode = data.get("selected_date_mode")
         session.selected_output_dir = data.get("selected_output_dir")
+        session.export_timezone = data.get("export_timezone", session.export_timezone)
+        session.export_calendar = data.get("export_calendar", session.export_calendar)
+        session.export_interval = data.get("export_interval", session.export_interval)
+        session.export_step = data.get("export_step", session.export_step)
+        session.export_time_aligned = data.get("export_time_aligned", session.export_time_aligned)
+        session.export_round_data = data.get("export_round_data", session.export_round_data)
+        session.export_calculation = data.get("export_calculation", session.export_calculation)
+        session.export_format = data.get("export_format", session.export_format)
+        session.export_extra_types = data.get("export_extra_types", session.export_extra_types)
 
         # Rehydrate datasets if previously cached
         if data.get("has_selected_datasets"):
@@ -546,6 +715,15 @@ def save_session_state(session: RISMASession) -> None:
         "selected_end_date": session.selected_end_date.strftime("%Y-%m-%d") if session.selected_end_date else None,
         "selected_date_mode": session.selected_date_mode,
         "selected_output_dir": session.selected_output_dir,
+        "export_timezone": session.export_timezone,
+        "export_calendar": session.export_calendar,
+        "export_interval": session.export_interval,
+        "export_step": session.export_step,
+        "export_time_aligned": session.export_time_aligned,
+        "export_round_data": session.export_round_data,
+        "export_calculation": session.export_calculation,
+        "export_format": session.export_format,
+        "export_extra_types": session.export_extra_types,
     }
     try:
         with open(path, "w") as f:
@@ -622,9 +800,13 @@ def create_parser():
     datasets_parser.add_argument('--list-only', 
                                 action='store_true',
                                 help='Just list available datasets without selection')
+
+    # Step 4: Export options
+    export_parser = subparsers.add_parser('export', help='Step 4: Configure export options and date range')
+    export_parser.add_argument('--list-only', action='store_true', help='Show current export options and date range')
     
-    # Step 4: Download data
-    download_parser = subparsers.add_parser('download', help='Step 4: Download selected data')
+    # Step 5: Download data
+    download_parser = subparsers.add_parser('download', help='Step 5: Download selected data')
     download_parser.add_argument('--start-date', 
                                type=lambda s: datetime.strptime(s, '%Y-%m-%d'),
                                help='Start date (YYYY-MM-DD)')
@@ -736,20 +918,20 @@ def handle_stations_step(session: RISMASession, args) -> bool:
             session.selected_stations = selected_ids
             print(f"✅ Selected stations: {session.selected_stations}")
             save_session_state(session)
-            # Auto-advance: show datasets, filters, then prompt download
+            # Auto-advance: show datasets, filters, then export options and download
             if _auto_show_datasets_and_select_filters(session):
-                # Ask to proceed to download
-                proceed = True
-                if HAS_QUESTIONARY:
-                    proceed = questionary.confirm(
-                        "Proceed to download with current selections?",
-                        default=True,
-                        qmark="⬇️",
-                    ).ask()
-                if proceed:
-                    download_args = _interactive_download_prompt(session)
-                    if download_args is not None:
-                        handle_download_step(session, download_args)
+                if handle_export_step(session, argparse.Namespace(list_only=False)):
+                    proceed = True
+                    if HAS_QUESTIONARY:
+                        proceed = questionary.confirm(
+                            "Proceed to download with current selections?",
+                            default=True,
+                            qmark="⬇️",
+                        ).ask()
+                    if proceed:
+                        download_args = _interactive_download_prompt(session)
+                        if download_args is not None:
+                            handle_download_step(session, download_args)
             return True
         
         if args.list_only:
@@ -763,19 +945,20 @@ def handle_stations_step(session: RISMASession, args) -> bool:
             session.selected_stations = selected_ids
             print(f"✅ Selected stations: {session.selected_stations}")
             save_session_state(session)
-            # Auto-advance: show datasets, filters, then prompt download
+            # Auto-advance: show datasets, filters, then export options and download
             if _auto_show_datasets_and_select_filters(session):
-                proceed = True
-                if HAS_QUESTIONARY:
-                    proceed = questionary.confirm(
-                        "Proceed to download with current selections?",
-                        default=True,
-                        qmark="⬇️",
-                    ).ask()
-                if proceed:
-                    download_args = _interactive_download_prompt(session)
-                    if download_args is not None:
-                        handle_download_step(session, download_args)
+                if handle_export_step(session, argparse.Namespace(list_only=False)):
+                    proceed = True
+                    if HAS_QUESTIONARY:
+                        proceed = questionary.confirm(
+                            "Proceed to download with current selections?",
+                            default=True,
+                            qmark="⬇️",
+                        ).ask()
+                    if proceed:
+                        download_args = _interactive_download_prompt(session)
+                        if download_args is not None:
+                            handle_download_step(session, download_args)
             return True
         
         if args.select:
@@ -894,18 +1077,16 @@ def handle_datasets_step(session: RISMASession, args) -> bool:
             # Date range selection as part of datasets command
             if not _interactive_select_date_range(session, datasets):
                 return False
+            # Export options selection
+            if not _interactive_select_export_options(session):
+                return False
         else:
             print("ℹ️  Tip: Install 'questionary' to choose sensors, depths, and dates interactively.")
 
         # Cache for download and show summary
         session.selected_datasets = datasets
-        print(f"\nTotal: {len(datasets)} datasets ready for download")
-        if session.selected_date_mode == 'entire':
-            print("   Date Range: Entire period of record")
-        elif session.selected_start_date or session.selected_end_date:
-            s = session.selected_start_date.strftime('%Y-%m-%d') if session.selected_start_date else 'N/A'
-            e = session.selected_end_date.strftime('%Y-%m-%d') if session.selected_end_date else 'N/A'
-            print(f"   Date Range: {s} to {e}")
+        print(f"\nTotal: {len(datasets)} datasets ready for export configuration")
+        print("\n💡 Next step: Run 'export' to configure export options and date range, then 'download'")
         save_session_state(session)
         
     except Exception as e:
@@ -949,6 +1130,16 @@ def handle_download_step(session: RISMASession, args) -> bool:
             start_date = None
             end_date = None
             date_mode = 'entire'
+        elif session.selected_date_mode == 'overlapping':
+            # Use server-side overlapping period
+            start_date = None
+            end_date = None
+            date_mode = 'overlapping'
+        elif session.selected_date_mode in ('days30','months6','years1','last7'):
+            # Use server-side presets for relative ranges
+            start_date = None
+            end_date = None
+            date_mode = session.selected_date_mode
         elif session.selected_start_date or session.selected_end_date:
             # Use previously saved custom range
             start_date = session.selected_start_date
@@ -964,6 +1155,16 @@ def handle_download_step(session: RISMASession, args) -> bool:
         if date_mode == 'entire':
             # Use per-dataset entire period by leaving dates unset
             print("📅 Using entire period of record")
+        elif date_mode == 'overlapping':
+            print("📅 Using overlapping period of record (intersection)")
+        elif date_mode in ('days30','months6','years1','last7'):
+            label = {
+                'last7': 'Last 7 days',
+                'days30': 'Last 30 days',
+                'months6': 'Last 6 months',
+                'years1': 'Last 1 year',
+            }[date_mode]
+            print(f"📅 Using preset range: {label}")
         elif start_date and end_date:
             print(f"📅 Using date range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
 
@@ -972,7 +1173,7 @@ def handle_download_step(session: RISMASession, args) -> bool:
             print("❌ Start date must be on or before end date.")
             return False
 
-        # Persist the effective date range
+        # Persist the effective date range (custom or entire-overlap leave None)
         session.selected_start_date = start_date
         session.selected_end_date = end_date
         session.selected_date_mode = date_mode
@@ -991,19 +1192,50 @@ def handle_download_step(session: RISMASession, args) -> bool:
         
         success_count = 0
         for station_id, station_datasets in grouped:
-            output_file = os.path.join(out_dir, f"{station_id}.csv")
+            fmt = (session.export_format or "csv").lower()
+            ext = ".csv" if fmt == "csv" else (".xlsx" if fmt == "excel" else ".json")
+            output_file = os.path.join(out_dir, f"{station_id}{ext}")
             
             try:
+                # Determine DateRange override
+                date_range_override = None
+                if session.selected_date_mode == 'overlapping':
+                    date_range_override = 'OverlappingPeriodOfRecord'
+                elif session.selected_date_mode == 'last7':
+                    date_range_override = 'Days7'
+                elif session.selected_date_mode == 'days30':
+                    date_range_override = 'Days30'
+                elif session.selected_date_mode == 'months6':
+                    date_range_override = 'Months6'
+                elif session.selected_date_mode == 'years1':
+                    date_range_override = 'Years1'
+
                 data = session.portal.fetch_dataset(
                     dset_names=station_datasets.dset_name.tolist(),
-                    start=start_date.strftime('%Y-%m-%d') if start_date else None,
-                    end=end_date.strftime('%Y-%m-%d') if end_date else None,
-                    extra_data_types=args.extra_data_types if args.extra_data_types else None
+                    start=start_date.strftime('%Y-%m-%d') if start_date and not date_range_override else None,
+                    end=end_date.strftime('%Y-%m-%d') if end_date and not date_range_override else None,
+                    date_range=date_range_override,
+                    extra_data_types=(args.extra_data_types if args.extra_data_types else session.export_extra_types or None),
+                    timezone=session.export_timezone,
+                    calendar=session.export_calendar,
+                    interval=session.export_interval,
+                    step=session.export_step,
+                    time_aligned=session.export_time_aligned,
+                    round_data=session.export_round_data,
+                    calculation=session.export_calculation,
+                    export_format=session.export_format
                 )
                 
-                # Save to CSV
-                data.to_csv(output_file, index=False)
-                print(f"  ✅ {station_id}: {len(data)} records → {output_file}")
+                # Save according to format
+                if fmt == "csv":
+                    # data is a DataFrame
+                    data.to_csv(output_file, index=False)
+                    print(f"  ✅ {station_id}: {len(data)} records → {output_file}")
+                else:
+                    # data is raw bytes
+                    with open(output_file, "wb") as f:
+                        f.write(data)
+                    print(f"  ✅ {station_id}: saved → {output_file}")
                 
                 success_count += 1
                 
@@ -1022,7 +1254,11 @@ def handle_download_step(session: RISMASession, args) -> bool:
         print(f"\n📊 Summary:")
         print(f"   Parameters: {session.selected_params}")
         print(f"   Stations: {session.selected_stations}")
-        print(f"   Date range: {start_date.strftime('%Y-%m-%d') if start_date else 'N/A'} to {end_date.strftime('%Y-%m-%d') if end_date else 'N/A'}")
+        def _fmt(dt):
+            if not dt:
+                return 'N/A'
+            return dt.strftime('%Y-%m-%d %H:%M') if (dt.hour or dt.minute) else dt.strftime('%Y-%m-%d')
+        print(f"   Date range: {_fmt(start_date)} to {_fmt(end_date)}")
         
     except Exception as e:
         print(f"❌ Error: {e}")
@@ -1042,6 +1278,16 @@ def handle_status(session: RISMASession) -> bool:
     # Dates
     if session.selected_date_mode == 'entire':
         print("   Selected Date Range: Entire period of record")
+    elif session.selected_date_mode == 'overlapping':
+        print("   Selected Date Range: Overlapping period of record")
+    elif session.selected_date_mode in ('last7','days30','months6','years1'):
+        label = {
+            'last7': 'Last 7 days',
+            'days30': 'Last 30 days',
+            'months6': 'Last 6 months',
+            'years1': 'Last 1 year',
+        }[session.selected_date_mode]
+        print(f"   Selected Date Range: {label}")
     elif session.selected_start_date or session.selected_end_date:
         s = session.selected_start_date.strftime('%Y-%m-%d') if session.selected_start_date else 'N/A'
         e = session.selected_end_date.strftime('%Y-%m-%d') if session.selected_end_date else 'N/A'
@@ -1049,6 +1295,19 @@ def handle_status(session: RISMASession) -> bool:
     else:
         print("   Selected Date Range: None")
     print(f"   Output Folder: {session.selected_output_dir if session.selected_output_dir else 'None'}")
+    # Friendly timezone label
+    def _fmt_tz(o):
+        if o is None:
+            return "Server default"
+        if o == 0:
+            return "UTC"
+        sign = "+" if o and o > 0 else "-"
+        return f"UTC{sign}{abs(o)}"
+    print("   Export Options: "
+          f"TimeZone={_fmt_tz(session.export_timezone)}, "
+          f"Calendar={session.export_calendar or 'Server default'}, Interval={session.export_interval or 'Server default'}, Step={session.export_step if session.export_step is not None else 'Server default'}, "
+          f"TimeAligned={session.export_time_aligned if session.export_time_aligned is not None else 'Server default'}, RoundData={session.export_round_data if session.export_round_data is not None else 'Server default'}, "
+          f"Calculation={session.export_calculation or 'Server default'}, Extra={session.export_extra_types or []}")
     
     # Show next step
     if not session.selected_params:
@@ -1061,6 +1320,45 @@ def handle_status(session: RISMASession) -> bool:
         print(f"\n💡 Next step: Run 'download' to download data")
     
     return True
+
+
+def handle_export_step(session: RISMASession, args) -> bool:
+    """Configure export options and date range."""
+    if session.selected_datasets.empty:
+        print("⚠️  No datasets selected. Run 'datasets' first.")
+        return False
+    if getattr(args, 'list_only', False):
+        print("\n🧰 Current export options:")
+        print(f"   TimeZone: {session.export_timezone}")
+        print(f"   Calendar: {session.export_calendar}")
+        print(f"   Interval: {session.export_interval}")
+        print(f"   Step: {session.export_step}")
+        print(f"   TimeAligned: {session.export_time_aligned}")
+        print(f"   RoundData: {session.export_round_data}")
+        print(f"   Calculation: {session.export_calculation}")
+        if session.selected_date_mode == 'entire':
+            print("   Date Range: Entire period of record")
+        elif session.selected_start_date or session.selected_end_date:
+            s = session.selected_start_date.strftime('%Y-%m-%d') if session.selected_start_date else 'N/A'
+            e = session.selected_end_date.strftime('%Y-%m-%d') if session.selected_end_date else 'N/A'
+            print(f"   Date Range: {s} to {e}")
+        else:
+            print("   Date Range: None")
+        print(f"   Extra data types: {session.export_extra_types or []}")
+        return True
+
+    # Interactive export options (date + options)
+    if not HAS_QUESTIONARY:
+        print("❌ Interactive export options require 'questionary'. Install with: pip install questionary")
+        return False
+    # Date first
+    if not _interactive_select_date_range(session, session.selected_datasets):
+        return False
+    # Then other export options
+    ok = _interactive_select_export_options(session)
+    if ok:
+        print("✅ Export options saved.")
+    return ok
 
 
 def handle_reset(session: RISMASession) -> bool:
@@ -1185,6 +1483,8 @@ def cli():
             handle_stations_step(session, args)
         elif args.command == 'datasets':
             handle_datasets_step(session, args)
+        elif args.command == 'export':
+            handle_export_step(session, args)
         elif args.command == 'download':
             handle_download_step(session, args)
         elif args.command == 'status':

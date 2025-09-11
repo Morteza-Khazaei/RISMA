@@ -361,34 +361,61 @@ class AquariusWebPortal:
         start=None,
         end=None,
         session=None,
+        timezone=None,
+        calendar=None,
+        interval=None,
+        step=None,
+        time_aligned=None,
+        round_data=None,
+        calculation=None,
+        unit_ids=None,
+        export_format=None,
         **kwargs,
     ):
         """Fetch timeseries data for a single dataset."""
-        query = {
-            "Calendar": "CALENDARYEAR",
-            "Interval": "PointsAsRecorded",
-            "Step": 1,
-            "ExportFormat": "csv",
-            "TimeAligned": True,
-            "RoundData": True,
-            "calculation": "Instantaneous"
-        }
+        # Only include options explicitly provided. This allows callers to keep
+        # options undefined to use server defaults.
+        query = {}
+        # Apply overrides if provided
+        if timezone is not None:
+            query["TimeZone"] = timezone
+        if calendar is not None:
+            query["Calendar"] = calendar
+        if interval is not None:
+            query["Interval"] = interval
+        if step is not None:
+            query["Step"] = step
+        if export_format is not None:
+            query["ExportFormat"] = export_format
+        if time_aligned is not None:
+            query["TimeAligned"] = bool(time_aligned)
+        if round_data is not None:
+            query["RoundData"] = bool(round_data)
+        if calculation is not None:
+            query["calculation"] = calculation
         if isinstance(dset_names, str):
             query["Datasets[0].DatasetName"] = dset_names
         elif isinstance(dset_names, list):
             for i, dset_name in enumerate(dset_names):
                 query[f"Datasets[{i}].DatasetName"] = dset_name
+                if calculation is not None:
+                    query[f"Datasets[{i}].Calculation"] = calculation
+                if isinstance(unit_ids, list) and i < len(unit_ids) and unit_ids[i] is not None:
+                    query[f"Datasets[{i}].UnitId"] = unit_ids[i]
         else:
             raise ValueError("dset_names must be a string or a list of strings.")
 
         if date_range is None and start is None and end is None:
-            query["DateRange"] = "EntirePeriodOfRecord"
+            # Leave DateRange undefined to allow server default (typically EntirePeriodOfRecord)
+            pass
         elif start and end:
             query["DateRange"] = "Custom"
             query["StartTime"] = pd.Timestamp(start).strftime("%Y-%m-%d %H:%M")
             query["EndTime"] = pd.Timestamp(end).strftime("%Y-%m-%d %H:%M")
         elif date_range == "Days7":
             query["DateRange"] = "Days7"
+        elif isinstance(date_range, str):
+            query["DateRange"] = date_range
 
         if extra_data_types == "all":
             extra_data_types = ["grade", "approval", "qualifier", "interpolation_type"]
@@ -403,28 +430,19 @@ class AquariusWebPortal:
         url = self.server + "/Export/BulkExport"
         resp = self._make_request_with_disclaimer_handling(url, method="GET", data=query)
 
-        # Best-effort CSV parsing. Some servers include preamble lines; we keep header=None.
-        # Avoid brittle header probing that can fail when the response is an error page.
-        with io.StringIO(resp.text) as f:
-            try:
-                df = pd.read_csv(f, header=None, sep=",")
-            except Exception as e:
-                # Surface the first 200 chars of response for debugging
-                snippet = resp.text[:200].replace("\n", " ")
-                raise ValueError(f"Failed to parse CSV export: {e}; response starts with: {snippet}")
-        
-        # # Rename columns based on the header line
-        # header_line = lines[header_line_index].split(",")
-        # header_line[0] = lines[header_line_index + 1].split(",")[0]
-        # header_line[1] = lines[header_line_index + 1].split(",")[1].replace("Value", header_line[1].split(".")[1])
-        # df.columns = header_line
-
-        # # Determine the timestamp column and convert it to datetime
-        # timestamp_col = df.columns[0]
-        # df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors="coerce")
-        # df = df.set_index(timestamp_col)
-
-        return df
+        fmt = (export_format or query.get("ExportFormat") or "csv").lower()
+        if fmt == "csv":
+            # Best-effort CSV parsing
+            with io.StringIO(resp.text) as f:
+                try:
+                    df = pd.read_csv(f, header=None, sep=",", dtype=str, low_memory=False)
+                except Exception as e:
+                    snippet = resp.text[:200].replace("\n", " ")
+                    raise ValueError(f"Failed to parse CSV export: {e}; response starts with: {snippet}")
+            return df
+        else:
+            # For non-CSV formats (excel/json), return raw bytes for the caller to save
+            return resp.content
 
 
     def parse_params_from_html(self, source):
