@@ -21,11 +21,17 @@ dependencies = [
     "lxml",
     "matplotlib",
     "ipykernel",
-    "click"
+    "click",
+    "questionary>=2.0.0"
 ]
 
 [project.urls]
 Homepage = "https://github.com/Morteza-Khazaei/RISMA"
+
+[project.optional-dependencies]
+cli = [
+    "questionary>=2.0.0"
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

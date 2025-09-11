@@ -403,18 +403,15 @@ class AquariusWebPortal:
         url = self.server + "/Export/BulkExport"
         resp = self._make_request_with_disclaimer_handling(url, method="GET", data=query)
 
-        # Find header line starting with "Timestamp"
-        lines = resp.text.splitlines()
-        header_line_index = next(
-            (i for i, line in enumerate(lines) if line.startswith("Timestamp (")), None
-        ) - 1  # Adjust index to get the header line
-
-        if header_line_index is None:
-            raise ValueError("Failed to locate CSV header in response.")
-
-        # Read using correct skiprows
+        # Best-effort CSV parsing. Some servers include preamble lines; we keep header=None.
+        # Avoid brittle header probing that can fail when the response is an error page.
         with io.StringIO(resp.text) as f:
-            df = pd.read_csv(f, header=None, sep=",")
+            try:
+                df = pd.read_csv(f, header=None, sep=",")
+            except Exception as e:
+                # Surface the first 200 chars of response for debugging
+                snippet = resp.text[:200].replace("\n", " ")
+                raise ValueError(f"Failed to parse CSV export: {e}; response starts with: {snippet}")
         
         # # Rename columns based on the header line
         # header_line = lines[header_line_index].split(",")

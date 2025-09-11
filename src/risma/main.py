@@ -14,6 +14,16 @@ from typing import List, Optional, Dict, Any
 
 import pandas as pd
 
+# Optional interactive UI support via questionary
+try:
+    import questionary  # type: ignore
+    from questionary import Choice  # type: ignore
+    HAS_QUESTIONARY = True
+except Exception:  # optional dependency
+    questionary = None
+    Choice = None
+    HAS_QUESTIONARY = False
+
 from risma import AquariusWebPortal
 
 
@@ -29,6 +39,10 @@ class RISMASession:
         self.selected_sensors: List[str] = []
         self.selected_depths: List[str] = []
         self.selected_datasets: pd.DataFrame = pd.DataFrame()
+        self.selected_start_date: Optional[datetime] = None
+        self.selected_end_date: Optional[datetime] = None
+        self.selected_date_mode: Optional[str] = None  # 'custom' | 'last7' | 'entire'
+        self.selected_output_dir: Optional[str] = None
         
         # Available data loaded as needed
         self.available_params: pd.DataFrame = pd.DataFrame()
@@ -74,6 +88,10 @@ class RISMASession:
         self.selected_sensors = []
         self.selected_depths = []
         self.selected_datasets = pd.DataFrame()
+        self.selected_start_date = None
+        self.selected_end_date = None
+        self.selected_date_mode = None
+        self.selected_output_dir = None
 
 
 def _print_table(headers: List[str], rows: List[List[str]]):
@@ -97,6 +115,368 @@ def _print_table(headers: List[str], rows: List[List[str]]):
     # Print rows
     for row in rows:
         print(fmt_line(row))
+
+
+def _parse_selection_indices(inp: str, max_index: int) -> List[int]:
+    """Parse a selection string like '1 2 5-8' into 0-based indices.
+    Supports 'a' or 'all' for full selection.
+    """
+    inp = inp.strip().lower()
+    if inp in ("a", "all"):
+        return list(range(max_index))
+    sel: List[int] = []
+    tokens = [t for t in inp.replace(",", " ").split() if t]
+    for t in tokens:
+        if "-" in t:
+            try:
+                start_s, end_s = t.split("-", 1)
+                start = int(start_s)
+                end = int(end_s)
+            except ValueError:
+                continue
+            if start <= 0 or end <= 0:
+                continue
+            for i in range(start, end + 1):
+                if 1 <= i <= max_index:
+                    sel.append(i - 1)
+        else:
+            try:
+                i = int(t)
+                if 1 <= i <= max_index:
+                    sel.append(i - 1)
+            except ValueError:
+                continue
+    # Deduplicate preserving order
+    seen = set()
+    out: List[int] = []
+    for i in sel:
+        if i not in seen:
+            seen.add(i)
+            out.append(i)
+    return out
+
+
+def _interactive_select_params_with_questionary(params_df: pd.DataFrame) -> List[str]:
+    """Use questionary to interactively select parameters by name.
+    Returns list of param_name.
+    """
+    if not HAS_QUESTIONARY:
+        return []
+    choices = []
+    for _, row in params_df.iterrows():
+        label = f"{row.param_name} — {row.param_desc}"
+        choices.append(Choice(title=label, value=row.param_name))
+    if not choices:
+        return []
+    answer = questionary.checkbox(
+        "Select parameters (space to toggle, enter to confirm):",
+        choices=choices,
+        qmark="⚙",
+        validate=lambda sel: True if len(sel) > 0 else "Select at least one",
+    ).ask()
+    return answer or []
+
+
+def _interactive_select_stations_with_questionary(loc_df: pd.DataFrame, prompt_filter: bool = True) -> List[str]:
+    """Use questionary to interactively select station IDs.
+    Returns list of loc_id.
+    """
+    if not HAS_QUESTIONARY:
+        return []
+    # Optional filter prompt
+    df = loc_df
+    if prompt_filter:
+        filt = questionary.text(
+            "Filter (substring in ID/Name), leave empty for all:", qmark="🔎"
+        ).ask() or ""
+        if filt:
+            mask = (
+                df.loc_id.astype(str).str.contains(filt, case=False, na=False)
+                | df.loc_name.astype(str).str.contains(filt, case=False, na=False)
+            )
+            df = df[mask]
+    choices = []
+    for _, row in df.iterrows():
+        lat = f"{row.lat:.4f}" if pd.notna(row.lat) else "N/A"
+        lon = f"{row.lon:.4f}" if pd.notna(row.lon) else "N/A"
+        province = getattr(row, 'province', 'N/A')
+        title = f"{row.loc_id} — {row.loc_name} ({row.loc_type}, {lat},{lon}, {province})"
+        choices.append(Choice(title=title, value=row.loc_id))
+    if not choices:
+        print("⚠️  No stations match the filter.")
+        return []
+    answer = questionary.checkbox(
+        "Select stations (space to toggle, enter to confirm):",
+        choices=choices,
+        qmark="📍",
+        validate=lambda sel: True if len(sel) > 0 else "Select at least one",
+    ).ask()
+    return answer or []
+
+
+def _auto_show_datasets_and_select_filters(session: RISMASession) -> bool:
+    """Show datasets overview, then prompt for sensors/depths filters, then refresh and show final list."""
+    try:
+        # Initial unfiltered load for overview and to collect available filters
+        session.selected_sensors = []
+        session.selected_depths = []
+        df = session.load_datasets()
+        if df.empty:
+            print("⚠️  No datasets found for current parameters and stations.")
+            return False
+
+        # Overview table
+        print("\n📊 Available datasets (overview):")
+        print(f"   Parameters: {session.selected_params}")
+        print(f"   Stations: {session.selected_stations}")
+        headers = ["Station", "Parameter", "Label", "Type", "Sensor", "Depth", "Start", "End"]
+        rows = []
+        for _, ds in df.iterrows():
+            sensor = getattr(ds, 'sensor', 'N/A')
+            depth = getattr(ds, 'depth', 'N/A')
+            dtype = getattr(ds, 'type', 'N/A')
+            start = str(ds.dset_start)[:10] if pd.notna(ds.dset_start) else "N/A"
+            end = str(ds.dset_end)[:10] if pd.notna(ds.dset_end) else "N/A"
+            rows.append([str(ds.loc_id), str(ds.param), str(ds.label), str(dtype), str(sensor), str(depth), start, end])
+        _print_table(headers, rows)
+
+        # Prompt for sensors/depths filters (only from soil datasets)
+        df_soil = df[df.get('type').eq('soil')] if 'type' in df.columns else df.head(0)
+        sensors = sorted(set([s for s in df_soil.get('sensor', pd.Series(dtype=str)).dropna().astype(str).tolist() if s]))
+        depths = sorted(set([d for d in df_soil.get('depth', pd.Series(dtype=str)).dropna().astype(str).tolist() if d]))
+
+        # If no soil filters available, skip filtering
+        selected_sensors: List[str] = []
+        selected_depths: List[str] = []
+        if HAS_QUESTIONARY and (sensors or depths):
+            if sensors:
+                selected_sensors = questionary.checkbox(
+                    "Select sensors to include (Enter for all):",
+                    choices=[Choice(title=s, value=s) for s in sensors],
+                    qmark="🧪",
+                ).ask() or []
+            if depths:
+                selected_depths = questionary.checkbox(
+                    "Select depths to include (Enter for all):",
+                    choices=[Choice(title=d, value=d) for d in depths],
+                    qmark="📏",
+                ).ask() or []
+
+        # Apply filters if selected
+        session.selected_sensors = selected_sensors
+        session.selected_depths = selected_depths
+        df_final = session.load_datasets()
+        if df_final.empty:
+            print("⚠️  No datasets after applying filters.")
+            return False
+
+        # Show final datasets
+        print("\n📊 Datasets after filters:")
+        headers = ["Station", "Parameter", "Label", "Type", "Sensor", "Depth", "Start", "End"]
+        rows = []
+        for _, ds in df_final.iterrows():
+            sensor = getattr(ds, 'sensor', 'N/A')
+            depth = getattr(ds, 'depth', 'N/A')
+            dtype = getattr(ds, 'type', 'N/A')
+            start = str(ds.dset_start)[:10] if pd.notna(ds.dset_start) else "N/A"
+            end = str(ds.dset_end)[:10] if pd.notna(ds.dset_end) else "N/A"
+            rows.append([str(ds.loc_id), str(ds.param), str(ds.label), str(dtype), str(sensor), str(depth), start, end])
+        _print_table(headers, rows)
+
+        # Cache for download
+        session.selected_datasets = df_final
+        save_session_state(session)
+
+        # Prompt for date range selection here as well
+        if not _interactive_select_date_range(session, df_final):
+            return False
+        return True
+    except Exception as e:
+        print(f"❌ Error preparing datasets: {e}")
+        return False
+
+
+def _interactive_download_prompt(session: RISMASession) -> Optional[argparse.Namespace]:
+    """Prompt for (or reuse) date range and output folder; return argparse-like args namespace.
+    If a date range was already chosen in datasets, reuse it and do not prompt again.
+    """
+    if not HAS_QUESTIONARY:
+        print("❌ Interactive download requires 'questionary'. Install with: pip install questionary")
+        return None
+
+    # Reuse previously selected date range to avoid double prompting
+    start_date = session.selected_start_date
+    end_date = session.selected_end_date
+    choice = session.selected_date_mode
+
+    if choice is None:
+        # No prior selection; prompt now
+        choice = questionary.select(
+            "Select date range:",
+            choices=[
+                Choice(title="Last 7 days", value="last7"),
+                Choice(title="Custom range", value="custom"),
+                Choice(title="Entire period of record", value="entire"),
+            ],
+            qmark="📅",
+        ).ask()
+        if choice == "last7":
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=7)
+        elif choice == "custom":
+            s = questionary.text("Start date (YYYY-MM-DD):", qmark="📅").ask()
+            e = questionary.text("End date (YYYY-MM-DD):", qmark="📅").ask()
+            try:
+                start_date = datetime.strptime(s, "%Y-%m-%d") if s else None
+                end_date = datetime.strptime(e, "%Y-%m-%d") if e else None
+            except Exception:
+                print("❌ Invalid date format.")
+                return None
+            if not start_date or not end_date or start_date > end_date:
+                print("❌ Invalid custom date range.")
+                return None
+        elif choice == "entire":
+            # Let download step compute bounds from datasets if needed
+            start_date = None
+            end_date = None
+    else:
+        # Show a brief note about reused date selection
+        if choice == 'entire':
+            if start_date and end_date:
+                print(f"📅 Using previously selected entire period: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+            else:
+                print("📅 Using previously selected entire period of record")
+        elif start_date and end_date:
+            print(f"📅 Using previously selected date range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+
+    # Output directory
+    default_dir = session.selected_output_dir or os.path.join(os.path.expanduser("~"), "RISMA_data")
+    out_dir = questionary.text(
+        f"Output directory:", default=default_dir, qmark="📁"
+    ).ask() or default_dir
+
+    # Extra data types
+    extra = questionary.checkbox(
+        "Include extra data types (optional):",
+        choices=[
+            Choice("grade"),
+            Choice("approval"),
+            Choice("qualifier"),
+            Choice("interpolation_type"),
+        ],
+        qmark="➕",
+    ).ask() or []
+
+    return argparse.Namespace(
+        start_date=start_date,
+        end_date=end_date,
+        output=out_dir,
+        extra_data_types=extra,
+        date_mode=choice,
+        entire_period=True if choice == "entire" else False,
+    )
+
+
+def _interactive_select_date_range(session: RISMASession, datasets_df: Optional[pd.DataFrame] = None) -> bool:
+    """Prompt the user to choose a date range and save it to the session."""
+    if not HAS_QUESTIONARY:
+        print("❌ Interactive date selection requires 'questionary'. Install with: pip install questionary")
+        return False
+    choice = questionary.select(
+        "Select date range:",
+        choices=[
+            Choice(title="Last 7 days", value="last7"),
+            Choice(title="Custom range", value="custom"),
+            Choice(title="Entire period of record", value="entire"),
+        ],
+        qmark="📅",
+    ).ask()
+    start_date = None
+    end_date = None
+    if choice == "last7":
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=7)
+    elif choice == "custom":
+        s = questionary.text("Start date (YYYY-MM-DD):", qmark="📅").ask()
+        e = questionary.text("End date (YYYY-MM-DD):", qmark="📅").ask()
+        try:
+            start_date = datetime.strptime(s, "%Y-%m-%d") if s else None
+            end_date = datetime.strptime(e, "%Y-%m-%d") if e else None
+        except Exception:
+            print("❌ Invalid date format.")
+            return False
+        if not start_date or not end_date or start_date > end_date:
+            print("❌ Invalid custom date range.")
+            return False
+    elif choice == "entire":
+        # Use per-dataset default start/end by leaving dates unset
+        start_date = None
+        end_date = None
+
+    session.selected_start_date = start_date
+    session.selected_end_date = end_date
+    session.selected_date_mode = choice
+    save_session_state(session)
+    if choice == 'entire':
+        print("📅 Date range set: Entire period of record")
+    else:
+        print(f"📅 Date range set: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+    return True
+
+
+def run_wizard(session: RISMASession) -> None:
+    """Run the end-to-end interactive wizard: params → stations → datasets/filters → download."""
+    if not HAS_QUESTIONARY:
+        print("❌ The interactive wizard requires 'questionary'. Install with: pip install questionary")
+        return
+    print("\n" + "=" * 80)
+    print("🌱 RISMA CLI - Guided Wizard")
+    print(f"   Connected to: {session.portal.server}")
+    print("=" * 80)
+    try:
+        # 1) Parameters
+        params = session.load_params()
+        selected_params = _interactive_select_params_with_questionary(params)
+        if not selected_params:
+            print("❌ No parameters selected. Exiting.")
+            return
+        session.selected_params = selected_params
+        save_session_state(session)
+        print(f"✅ Selected parameters: {session.selected_params}")
+
+        # 2) Stations
+        locations = session.load_locations()
+        selected_stations = _interactive_select_stations_with_questionary(locations)
+        if not selected_stations:
+            print("❌ No stations selected. Exiting.")
+            return
+        session.selected_stations = selected_stations
+        save_session_state(session)
+        print(f"✅ Selected stations: {session.selected_stations}")
+
+        # 3) Datasets overview + optional sensor/depth filters
+        if not _auto_show_datasets_and_select_filters(session):
+            print("❌ No datasets available for the chosen filters. Exiting.")
+            return
+
+        # 4) Confirm and prompt download options
+        proceed = questionary.confirm(
+            "Proceed to download with current selections?",
+            default=True,
+            qmark="⬇️",
+        ).ask()
+        if not proceed:
+            print("👋 Aborted before download.")
+            return
+        dl_args = _interactive_download_prompt(session)
+        if dl_args is None:
+            print("👋 Aborted before download.")
+            return
+        handle_download_step(session, dl_args)
+    except KeyboardInterrupt:
+        print("\n👋 Goodbye!")
+    except Exception as e:
+        print(f"❌ Wizard error: {e}")
 
 
 # ----------------------
@@ -128,6 +508,19 @@ def load_session_state(session: RISMASession) -> None:
         session.selected_stations = data.get("selected_stations", [])
         session.selected_sensors = data.get("selected_sensors", [])
         session.selected_depths = data.get("selected_depths", [])
+        # Dates are stored as ISO strings YYYY-MM-DD
+        s = data.get("selected_start_date")
+        e = data.get("selected_end_date")
+        try:
+            session.selected_start_date = datetime.strptime(s, "%Y-%m-%d") if s else None
+        except Exception:
+            session.selected_start_date = None
+        try:
+            session.selected_end_date = datetime.strptime(e, "%Y-%m-%d") if e else None
+        except Exception:
+            session.selected_end_date = None
+        session.selected_date_mode = data.get("selected_date_mode")
+        session.selected_output_dir = data.get("selected_output_dir")
 
         # Rehydrate datasets if previously cached
         if data.get("has_selected_datasets"):
@@ -149,6 +542,10 @@ def save_session_state(session: RISMASession) -> None:
         "selected_sensors": session.selected_sensors,
         "selected_depths": session.selected_depths,
         "has_selected_datasets": not session.selected_datasets.empty,
+        "selected_start_date": session.selected_start_date.strftime("%Y-%m-%d") if session.selected_start_date else None,
+        "selected_end_date": session.selected_end_date.strftime("%Y-%m-%d") if session.selected_end_date else None,
+        "selected_date_mode": session.selected_date_mode,
+        "selected_output_dir": session.selected_output_dir,
     }
     try:
         with open(path, "w") as f:
@@ -212,7 +609,7 @@ def create_parser():
                                 help='Station IDs to select (space-separated)')
     stations_parser.add_argument('--list-only', 
                                 action='store_true',
-                                help='Just list available stations without selection')
+                                help='Open interactive station selection immediately')
     
     # Step 3: Load and select datasets
     datasets_parser = subparsers.add_parser('datasets', help='Step 3: Load and select datasets')
@@ -256,17 +653,37 @@ def handle_params_step(session: RISMASession, args) -> bool:
         params = session.load_params()
         
         if args.list_only:
-            print(f"\n📋 Available parameters from {session.portal.server}:")
-            print("-" * 80)
-            print(f"{'ID':<5} {'Name':<25} {'Description':<40}")
-            print("-" * 80)
-            
-            for _, param in params.iterrows():
-                desc = param.param_desc[:37] + "..." if len(param.param_desc) > 40 else param.param_desc
-                print(f"{param.param_id:<5} {param.param_name:<25} {desc:<40}")
-            
-            print(f"\nTotal: {len(params)} parameters")
-            print("\n💡 Next step: Run 'params --select <param_names0> <param_names1> ...' to select parameters")
+            # Directly open interactive selection and then auto-advance
+            if not HAS_QUESTIONARY:
+                print("❌ Interactive selection requires 'questionary'. Install with: pip install questionary")
+                return False
+            selected_names = _interactive_select_params_with_questionary(params)
+            if not selected_names:
+                print("❌ No valid selections.")
+                return False
+            session.selected_params = selected_names
+            print(f"✅ Selected parameters: {session.selected_params}")
+            save_session_state(session)
+            # Auto-advance to stations selection
+            print("\n➡️  Continuing to station selection...")
+            _ = handle_stations_step(session, argparse.Namespace(select=None, list_only=True))
+            return True
+
+        # Default to interactive selection when no explicit --select values
+        if (not args.list_only) and ((args.select is None) or (len(args.select) == 0)):
+            if not HAS_QUESTIONARY:
+                print("❌ Interactive selection requires 'questionary'. Install with: pip install questionary")
+                return False
+            selected_names = _interactive_select_params_with_questionary(params)
+            if not selected_names:
+                print("❌ No valid selections.")
+                return False
+            session.selected_params = selected_names
+            print(f"✅ Selected parameters: {session.selected_params}")
+            save_session_state(session)
+            save_session_state(session)
+            print("\n➡️  Continuing to station selection...")
+            _ = handle_stations_step(session, argparse.Namespace(select=None, list_only=True))
             return True
         
         if args.select:
@@ -282,26 +699,14 @@ def handle_params_step(session: RISMASession, args) -> bool:
             session.selected_params = args.select
             print(f"✅ Selected parameters: {session.selected_params}")
             save_session_state(session)
-            print(f"\n💡 Next step: Run 'stations --list-only' to load and select stations")
+            save_session_state(session)
+            print("\n➡️  Continuing to station selection...")
+            _ = handle_stations_step(session, argparse.Namespace(select=None, list_only=True))
             return True
         
-        # Show current selections if any
-        if session.selected_params:
-            print(f"✅ Currently selected parameters: {session.selected_params}")
-        
-        # Interactive selection
-        print(f"\n📋 Available parameters from {session.portal.server}:")
-        print("-" * 80)
-        print(f"{'ID':<5} {'Name':<25} {'Description':<40}")
-        print("-" * 80)
-        
-        for _, param in params.iterrows():
-            desc = param.param_desc[:37] + "..." if len(param.param_desc) > 40 else param.param_desc
-            marker = "✓" if param.param_name in session.selected_params else " "
-            print(f"{marker} {param.param_id:<5} {param.param_name:<25} {desc:<40}")
-        
-        print(f"\nTotal: {len(params)} parameters")
-        print("\n💡 Usage: 'params --select <param_names>' or 'params --list-only'")
+        # If we reach here, it's because args.select has values and was invalid
+        # or no valid path matched. Show a helpful hint.
+        print("\n💡 Tip: Run 'params' for interactive selection, or use '--list-only' to view options.")
         
     except Exception as e:
         print(f"❌ Error: {e}")
@@ -318,21 +723,59 @@ def handle_stations_step(session: RISMASession, args) -> bool:
         
         # Load locations
         locations = session.load_locations()
+
+        # Default to interactive selection when no explicit --select values
+        if (args.select is None) or (len(args.select) == 0):
+            if not HAS_QUESTIONARY:
+                print("❌ Interactive selection requires 'questionary'. Install with: pip install questionary")
+                return False
+            selected_ids = _interactive_select_stations_with_questionary(locations)
+            if not selected_ids:
+                print("❌ No valid selections.")
+                return False
+            session.selected_stations = selected_ids
+            print(f"✅ Selected stations: {session.selected_stations}")
+            save_session_state(session)
+            # Auto-advance: show datasets, filters, then prompt download
+            if _auto_show_datasets_and_select_filters(session):
+                # Ask to proceed to download
+                proceed = True
+                if HAS_QUESTIONARY:
+                    proceed = questionary.confirm(
+                        "Proceed to download with current selections?",
+                        default=True,
+                        qmark="⬇️",
+                    ).ask()
+                if proceed:
+                    download_args = _interactive_download_prompt(session)
+                    if download_args is not None:
+                        handle_download_step(session, download_args)
+            return True
         
         if args.list_only:
-            print(f"\n🏢 Available stations from {session.portal.server}:")
-            print("-" * 100)
-            print(f"{'ID':<15} {'Name':<30} {'Type':<15} {'Lat':<10} {'Lon':<10} {'Province':<10}")
-            print("-" * 100)
-            
-            for _, loc in locations.iterrows():
-                lat = f"{loc.lat:.4f}" if pd.notna(loc.lat) else "N/A"
-                lon = f"{loc.lon:.4f}" if pd.notna(loc.lon) else "N/A"
-                province = getattr(loc, 'province', 'N/A')
-                print(f"{loc.loc_id:<15} {loc.loc_name:<30} {loc.loc_type:<15} {lat:<10} {lon:<10} {province:<10}")
-            
-            print(f"\nTotal: {len(locations)} stations")
-            print("\n💡 Next step: Run 'stations --select <station_ids>' to select stations")
+            if not HAS_QUESTIONARY:
+                print("❌ Interactive selection requires 'questionary'. Install with: pip install questionary")
+                return False
+            selected_ids = _interactive_select_stations_with_questionary(locations, prompt_filter=False)
+            if not selected_ids:
+                print("❌ No valid selections.")
+                return False
+            session.selected_stations = selected_ids
+            print(f"✅ Selected stations: {session.selected_stations}")
+            save_session_state(session)
+            # Auto-advance: show datasets, filters, then prompt download
+            if _auto_show_datasets_and_select_filters(session):
+                proceed = True
+                if HAS_QUESTIONARY:
+                    proceed = questionary.confirm(
+                        "Proceed to download with current selections?",
+                        default=True,
+                        qmark="⬇️",
+                    ).ask()
+                if proceed:
+                    download_args = _interactive_download_prompt(session)
+                    if download_args is not None:
+                        handle_download_step(session, download_args)
             return True
         
         if args.select:
@@ -351,25 +794,7 @@ def handle_stations_step(session: RISMASession, args) -> bool:
             print(f"💡 Next step: Run 'datasets --list-only' to load datasets based on your selections")
             return True
         
-        # Show current selections
-        if session.selected_stations:
-            print(f"✅ Currently selected stations: {session.selected_stations}")
-        
-        # Interactive display
-        print(f"\n🏢 Available stations from {session.portal.server}:")
-        print("-" * 100)
-        print(f"{'ID':<15} {'Name':<30} {'Type':<15} {'Lat':<10} {'Lon':<10} {'Province':<10}")
-        print("-" * 100)
-        
-        for _, loc in locations.iterrows():
-            lat = f"{loc.lat:.4f}" if pd.notna(loc.lat) else "N/A"
-            lon = f"{loc.lon:.4f}" if pd.notna(loc.lon) else "N/A"
-            province = getattr(loc, 'province', 'N/A')
-            marker = "✓" if loc.loc_id in session.selected_stations else " "
-            print(f"{marker} {loc.loc_id:<15} {loc.loc_name:<30} {loc.loc_type:<15} {lat:<10} {lon:<10} {province:<10}")
-        
-        print(f"\nTotal: {len(locations)} stations")
-        print("\n💡 Usage: 'stations --select <station_ids>' or 'stations --list-only'")
+        print("\n💡 Tip: Run 'stations' for interactive selection, or use '--list-only' to view options.")
         
     except Exception as e:
         print(f"❌ Error: {e}")
@@ -397,11 +822,11 @@ def handle_datasets_step(session: RISMASession, args) -> bool:
         
         # Load datasets
         datasets = session.load_datasets()
-        
         if datasets.empty:
             print("⚠️  No datasets found matching your selections")
             return False
-        
+
+        # If list-only, just show and cache
         if args.list_only:
             print(f"\n📊 Available datasets based on your selections:")
             print(f"   Parameters: {session.selected_params}")
@@ -419,40 +844,68 @@ def handle_datasets_step(session: RISMASession, args) -> bool:
                 ])
             _print_table(headers, rows)
             print(f"\nTotal: {len(datasets)} datasets")
-            # Cache datasets so download can proceed after listing
             session.selected_datasets = datasets
             save_session_state(session)
-            print("\n💡 Next step: Run 'download --start-date YYYY-MM-DD --end-date YYYY-MM-DD' to download the data")
             return True
-        
-        # Store the datasets for download
+
+        # Interactive filtering and date selection via questionary
+        if HAS_QUESTIONARY:
+            # Build filter choices
+            df_soil = datasets[datasets.get('type').eq('soil')] if 'type' in datasets.columns else datasets.head(0)
+            sensors = sorted(set([s for s in df_soil.get('sensor', pd.Series(dtype=str)).dropna().astype(str).tolist() if s]))
+            depths = sorted(set([d for d in df_soil.get('depth', pd.Series(dtype=str)).dropna().astype(str).tolist() if d]))
+            selected_sensors: List[str] = []
+            selected_depths: List[str] = []
+            if sensors:
+                selected_sensors = questionary.checkbox(
+                    "Select sensors to include (Enter for all):",
+                    choices=[Choice(title=s, value=s) for s in sensors],
+                    qmark="🧪",
+                ).ask() or []
+            if depths:
+                selected_depths = questionary.checkbox(
+                    "Select depths to include (Enter for all):",
+                    choices=[Choice(title=d, value=d) for d in depths],
+                    qmark="📏",
+                ).ask() or []
+            session.selected_sensors = selected_sensors
+            session.selected_depths = selected_depths
+            # Reload with filters and show final table
+            datasets = session.load_datasets()
+            if datasets.empty:
+                print("⚠️  No datasets after applying filters.")
+                return False
+            headers = ["Station", "Parameter", "Label", "Type", "Sensor", "Depth", "Start", "End"]
+            rows = []
+            for _, ds in datasets.iterrows():
+                sensor = getattr(ds, 'sensor', 'N/A')
+                depth = getattr(ds, 'depth', 'N/A')
+                dtype = getattr(ds, 'type', 'N/A')
+                start = str(ds.dset_start)[:10] if pd.notna(ds.dset_start) else "N/A"
+                end = str(ds.dset_end)[:10] if pd.notna(ds.dset_end) else "N/A"
+                rows.append([
+                    str(ds.loc_id), str(ds.param), str(ds.label), str(dtype), str(sensor), str(depth), start, end
+                ])
+            print("\n📊 Datasets after filters:")
+            _print_table(headers, rows)
+
+            # Cache datasets before date prompt to compute 'entire' bounds
+            session.selected_datasets = datasets
+            # Date range selection as part of datasets command
+            if not _interactive_select_date_range(session, datasets):
+                return False
+        else:
+            print("ℹ️  Tip: Install 'questionary' to choose sensors, depths, and dates interactively.")
+
+        # Cache for download and show summary
         session.selected_datasets = datasets
-        
-        print(f"\n📊 Loaded {len(datasets)} datasets based on your selections:")
-        print(f"   Parameters: {session.selected_params}")
-        print(f"   Stations: {session.selected_stations}")
-        
-        if session.selected_sensors:
-            print(f"   Sensors: {session.selected_sensors}")
-        if session.selected_depths:
-            print(f"   Depths: {session.selected_depths}")
-        
-        headers = ["Station", "Parameter", "Label", "Type", "Sensor", "Depth", "Start", "End"]
-        rows = []
-        for _, ds in datasets.iterrows():
-            sensor = getattr(ds, 'sensor', 'N/A')
-            depth = getattr(ds, 'depth', 'N/A')
-            dtype = getattr(ds, 'type', 'N/A')
-            start = str(ds.dset_start)[:10] if pd.notna(ds.dset_start) else "N/A"
-            end = str(ds.dset_end)[:10] if pd.notna(ds.dset_end) else "N/A"
-            rows.append([
-                str(ds.loc_id), str(ds.param), str(ds.label), str(dtype), str(sensor), str(depth), start, end
-            ])
-        _print_table(headers, rows)
-        
         print(f"\nTotal: {len(datasets)} datasets ready for download")
-        print("\n💡 Next step: Run 'download' to download the data")
-        print("   Optional: Add date range with --start-date YYYY-MM-DD --end-date YYYY-MM-DD")
+        if session.selected_date_mode == 'entire':
+            print("   Date Range: Entire period of record")
+        elif session.selected_start_date or session.selected_end_date:
+            s = session.selected_start_date.strftime('%Y-%m-%d') if session.selected_start_date else 'N/A'
+            e = session.selected_end_date.strftime('%Y-%m-%d') if session.selected_end_date else 'N/A'
+            print(f"   Date Range: {s} to {e}")
         save_session_state(session)
         
     except Exception as e:
@@ -468,32 +921,68 @@ def handle_download_step(session: RISMASession, args) -> bool:
             print("⚠️  No datasets selected. Please run through the steps: params → stations → datasets")
             return False
         
-        # Default to last 7 days if no dates specified
-        start_date = args.start_date
-        end_date = args.end_date
+        # Determine date mode and effective dates
+        arg_start = getattr(args, 'start_date', None)
+        arg_end = getattr(args, 'end_date', None)
+        arg_entire = getattr(args, 'entire_period', False)
+        start_date = None
+        end_date = None
+        date_mode = None
+
+        if arg_entire:
+            # Explicit entire period selection
+            start_date = None
+            end_date = None
+            date_mode = 'entire'
+        elif arg_start or arg_end:
+            # Custom range provided on CLI
+            now = datetime.now()
+            start_date = arg_start
+            end_date = arg_end
+            if start_date and not end_date:
+                end_date = now
+            elif end_date and not start_date:
+                start_date = end_date - timedelta(days=7)
+            date_mode = 'custom'
+        elif session.selected_date_mode == 'entire':
+            # Use previously chosen entire period
+            start_date = None
+            end_date = None
+            date_mode = 'entire'
+        elif session.selected_start_date or session.selected_end_date:
+            # Use previously saved custom range
+            start_date = session.selected_start_date
+            end_date = session.selected_end_date
+            date_mode = 'custom'
+        else:
+            # Default to last 7 days
+            now = datetime.now()
+            end_date = now
+            start_date = end_date - timedelta(days=7)
+            date_mode = 'last7'
         
-        now = datetime.now()
-        if not start_date and not end_date:
-            end_date = now
-            start_date = end_date - timedelta(days=7)
-            print(f"📅 Using last 7 days: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
-        elif start_date and not end_date:
-            end_date = now
-            print(f"📅 Using start date with end=now: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
-        elif end_date and not start_date:
-            start_date = end_date - timedelta(days=7)
-            print(f"📅 Using end date with 7-day window: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+        if date_mode == 'entire':
+            # Use per-dataset entire period by leaving dates unset
+            print("📅 Using entire period of record")
+        elif start_date and end_date:
+            print(f"📅 Using date range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
 
         # Validate date order
-        if start_date and end_date and start_date > end_date:
+        if (start_date is not None and end_date is not None) and start_date > end_date:
             print("❌ Start date must be on or before end date.")
             return False
+
+        # Persist the effective date range
+        session.selected_start_date = start_date
+        session.selected_end_date = end_date
+        session.selected_date_mode = date_mode
+        save_session_state(session)
         
         # Create output directory
         home_directory = os.path.expanduser("~")
         out_dir = os.path.join(home_directory, args.output)
         os.makedirs(out_dir, exist_ok=True)
-        
+
         print(f"📁 Output directory: {out_dir}")
         print(f"⬇️  Downloading {len(session.selected_datasets)} datasets...")
         
@@ -525,6 +1014,10 @@ def handle_download_step(session: RISMASession, args) -> bool:
         print(f"   Successfully downloaded: {success_count}/{len(grouped)} stations")
         print(f"   Files saved to: {out_dir}")
         
+        # Persist output directory
+        session.selected_output_dir = out_dir
+        save_session_state(session)
+        
         # Show summary
         print(f"\n📊 Summary:")
         print(f"   Parameters: {session.selected_params}")
@@ -546,6 +1039,16 @@ def handle_status(session: RISMASession) -> bool:
     print(f"   Selected Sensors: {session.selected_sensors if session.selected_sensors else 'Default'}")
     print(f"   Selected Depths: {session.selected_depths if session.selected_depths else 'Default'}")
     print(f"   Available Datasets: {len(session.selected_datasets) if not session.selected_datasets.empty else 0}")
+    # Dates
+    if session.selected_date_mode == 'entire':
+        print("   Selected Date Range: Entire period of record")
+    elif session.selected_start_date or session.selected_end_date:
+        s = session.selected_start_date.strftime('%Y-%m-%d') if session.selected_start_date else 'N/A'
+        e = session.selected_end_date.strftime('%Y-%m-%d') if session.selected_end_date else 'N/A'
+        print(f"   Selected Date Range: {s} to {e}")
+    else:
+        print("   Selected Date Range: None")
+    print(f"   Output Folder: {session.selected_output_dir if session.selected_output_dir else 'None'}")
     
     # Show next step
     if not session.selected_params:
@@ -692,8 +1195,8 @@ def cli():
             print("❌ Unknown command.")
             sys.exit(1)
     else:
-        # Interactive mode
-        run_interactive_mode(session, args)
+        # Default to guided wizard flow
+        run_wizard(session)
 
 
 if __name__ == '__main__':
