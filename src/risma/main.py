@@ -7,6 +7,8 @@ import os
 import sys
 import shlex
 import argparse
+import json
+from urllib.parse import urlparse
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 
@@ -51,12 +53,12 @@ class RISMASession:
         """Load datasets based on current selections"""
         if self.verbose:
             print("Loading datasets based on selections...")
-        
-        param_names = self.selected_params if self.selected_params else ['Air Temp', 'Soil temperature', 'Soil Moisture']
+        # Do not use hidden defaults; rely on explicit selections
+        param_names = self.selected_params
         stations = self.selected_stations if self.selected_stations else None
-        sensors = self.selected_sensors if self.selected_sensors else ['average']
-        depths = self.selected_depths if self.selected_depths else ['0 to 5 cm', '5 cm']
-        
+        sensors = self.selected_sensors if self.selected_sensors else None
+        depths = self.selected_depths if self.selected_depths else None
+
         self.available_datasets = self.portal.fetch_datasets(
             param_names=param_names,
             stations=stations,
@@ -72,6 +74,88 @@ class RISMASession:
         self.selected_sensors = []
         self.selected_depths = []
         self.selected_datasets = pd.DataFrame()
+
+
+def _print_table(headers: List[str], rows: List[List[str]]):
+    """Pretty-print a table with dynamic column widths based on content."""
+    # Ensure string conversion
+    rows = [["" if v is None else str(v) for v in row] for row in rows]
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            if i < len(widths):
+                widths[i] = max(widths[i], len(cell))
+            else:
+                widths.append(len(cell))
+    # Build format strings
+    sep = "  "
+    def fmt_line(vals):
+        return sep.join(f"{val:<{w}}" for val, w in zip(vals, widths))
+    # Print header
+    print(fmt_line(headers))
+    print("".join(["-" * w + (sep if i < len(widths)-1 else "") for i, w in enumerate(widths)]))
+    # Print rows
+    for row in rows:
+        print(fmt_line(row))
+
+
+# ----------------------
+# Simple state persistence
+# ----------------------
+def _state_dir() -> str:
+    path = os.path.expanduser("~/.risma")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _state_path_for_server(server: str) -> str:
+    try:
+        host = urlparse(server).netloc or server
+        host = host.replace(":", "_")
+    except Exception:
+        host = "default"
+    return os.path.join(_state_dir(), f"state_{host}.json")
+
+
+def load_session_state(session: RISMASession) -> None:
+    path = _state_path_for_server(session.portal.server)
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+        session.selected_params = data.get("selected_params", [])
+        session.selected_stations = data.get("selected_stations", [])
+        session.selected_sensors = data.get("selected_sensors", [])
+        session.selected_depths = data.get("selected_depths", [])
+
+        # Rehydrate datasets if previously cached
+        if data.get("has_selected_datasets"):
+            try:
+                ds = session.load_datasets()
+                session.selected_datasets = ds
+            except Exception:
+                session.selected_datasets = pd.DataFrame()
+    except Exception:
+        # Corrupt or unreadable state: ignore silently for robustness
+        return
+
+
+def save_session_state(session: RISMASession) -> None:
+    path = _state_path_for_server(session.portal.server)
+    data = {
+        "selected_params": session.selected_params,
+        "selected_stations": session.selected_stations,
+        "selected_sensors": session.selected_sensors,
+        "selected_depths": session.selected_depths,
+        "has_selected_datasets": not session.selected_datasets.empty,
+    }
+    try:
+        with open(path, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        # Best-effort persistence; do not crash CLI on save failure
+        pass
 
 
 def create_portal(server: str, no_disclaimer: bool, verbose: bool) -> AquariusWebPortal:
@@ -155,7 +239,7 @@ def create_parser():
                                help='Output directory (default: RISMA_data)')
     download_parser.add_argument('--extra-data-types', 
                                nargs='*',
-                               choices=['grade', 'approval', 'qualifier', 'interpolation_type', 'gaplevel', 'all'],
+                               choices=['grade', 'approval', 'qualifier', 'interpolation_type', 'all'],
                                help='Additional data types to include')
     
     # Utility commands
@@ -197,6 +281,7 @@ def handle_params_step(session: RISMASession, args) -> bool:
             
             session.selected_params = args.select
             print(f"✅ Selected parameters: {session.selected_params}")
+            save_session_state(session)
             print(f"\n💡 Next step: Run 'stations --list-only' to load and select stations")
             return True
         
@@ -262,6 +347,7 @@ def handle_stations_step(session: RISMASession, args) -> bool:
             
             session.selected_stations = args.select
             print(f"✅ Selected stations: {session.selected_stations}")
+            save_session_state(session)
             print(f"💡 Next step: Run 'datasets --list-only' to load datasets based on your selections")
             return True
         
@@ -294,13 +380,14 @@ def handle_stations_step(session: RISMASession, args) -> bool:
 def handle_datasets_step(session: RISMASession, args) -> bool:
     """Handle Step 3: Dataset loading and selection"""
     try:
-        # if not session.selected_params:
-        #     print("⚠️  Please select parameters first using 'params --select <param_names>'")
-        #     return False
+        # Enforce step order for predictability
+        if not session.selected_params:
+            print("⚠️  Please select parameters first using 'params --select <param_names>'")
+            return False
         
-        # if not session.selected_stations:
-        #     print("⚠️  Please select stations first using 'stations --select <station_ids>'")
-        #     return False
+        if not session.selected_stations:
+            print("⚠️  Please select stations first using 'stations --select <station_ids>'")
+            return False
         
         # Update sensor and depth selections if provided
         if args.sensors:
@@ -319,20 +406,22 @@ def handle_datasets_step(session: RISMASession, args) -> bool:
             print(f"\n📊 Available datasets based on your selections:")
             print(f"   Parameters: {session.selected_params}")
             print(f"   Stations: {session.selected_stations}")
-            print("-" * 130)
-            print(f"{'Station':<12} {'Parameter':<15} {'Label':<25} {'Type':<10} {'Sensor':<8} {'Depth':<12} {'Start':<12} {'End':<12}")
-            print("-" * 130)
-            
+            headers = ["Station", "Parameter", "Label", "Type", "Sensor", "Depth", "Start", "End"]
+            rows = []
             for _, ds in datasets.iterrows():
                 sensor = getattr(ds, 'sensor', 'N/A')
                 depth = getattr(ds, 'depth', 'N/A')
                 dtype = getattr(ds, 'type', 'N/A')
                 start = str(ds.dset_start)[:10] if pd.notna(ds.dset_start) else "N/A"
                 end = str(ds.dset_end)[:10] if pd.notna(ds.dset_end) else "N/A"
-                
-                print(f"{ds.loc_id:<12} {ds.param:<15} {ds.label:<25} {dtype:<10} {sensor:<8} {depth:<12} {start:<12} {end:<12}")
-            
+                rows.append([
+                    str(ds.loc_id), str(ds.param), str(ds.label), str(dtype), str(sensor), str(depth), start, end
+                ])
+            _print_table(headers, rows)
             print(f"\nTotal: {len(datasets)} datasets")
+            # Cache datasets so download can proceed after listing
+            session.selected_datasets = datasets
+            save_session_state(session)
             print("\n💡 Next step: Run 'download --start-date YYYY-MM-DD --end-date YYYY-MM-DD' to download the data")
             return True
         
@@ -348,22 +437,23 @@ def handle_datasets_step(session: RISMASession, args) -> bool:
         if session.selected_depths:
             print(f"   Depths: {session.selected_depths}")
         
-        print("-" * 130)
-        print(f"{'Station':<12} {'Parameter':<15} {'Label':<25} {'Type':<10} {'Sensor':<8} {'Depth':<12} {'Start':<12} {'End':<12}")
-        print("-" * 130)
-        
+        headers = ["Station", "Parameter", "Label", "Type", "Sensor", "Depth", "Start", "End"]
+        rows = []
         for _, ds in datasets.iterrows():
             sensor = getattr(ds, 'sensor', 'N/A')
             depth = getattr(ds, 'depth', 'N/A')
             dtype = getattr(ds, 'type', 'N/A')
             start = str(ds.dset_start)[:10] if pd.notna(ds.dset_start) else "N/A"
             end = str(ds.dset_end)[:10] if pd.notna(ds.dset_end) else "N/A"
-            
-            print(f"{ds.loc_id:<12} {ds.param:<15} {ds.label:<25} {dtype:<10} {sensor:<8} {depth:<12} {start:<12} {end:<12}")
+            rows.append([
+                str(ds.loc_id), str(ds.param), str(ds.label), str(dtype), str(sensor), str(depth), start, end
+            ])
+        _print_table(headers, rows)
         
         print(f"\nTotal: {len(datasets)} datasets ready for download")
         print("\n💡 Next step: Run 'download' to download the data")
         print("   Optional: Add date range with --start-date YYYY-MM-DD --end-date YYYY-MM-DD")
+        save_session_state(session)
         
     except Exception as e:
         print(f"❌ Error: {e}")
@@ -382,10 +472,22 @@ def handle_download_step(session: RISMASession, args) -> bool:
         start_date = args.start_date
         end_date = args.end_date
         
+        now = datetime.now()
         if not start_date and not end_date:
-            end_date = datetime.now()
+            end_date = now
             start_date = end_date - timedelta(days=7)
             print(f"📅 Using last 7 days: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+        elif start_date and not end_date:
+            end_date = now
+            print(f"📅 Using start date with end=now: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+        elif end_date and not start_date:
+            start_date = end_date - timedelta(days=7)
+            print(f"📅 Using end date with 7-day window: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+
+        # Validate date order
+        if start_date and end_date and start_date > end_date:
+            print("❌ Start date must be on or before end date.")
+            return False
         
         # Create output directory
         home_directory = os.path.expanduser("~")
@@ -463,6 +565,7 @@ def handle_reset(session: RISMASession) -> bool:
     session.reset_selections()
     print("🔄 All selections have been reset")
     print("💡 Next step: Run 'params' to start over")
+    save_session_state(session)
     return True
 
 
@@ -567,6 +670,8 @@ def cli():
     # Create portal and session
     portal = create_portal(args.server, args.no_disclaimer, args.verbose)
     session = RISMASession(portal, args.verbose)
+    # Load any prior selections for this server
+    load_session_state(session)
     
     # Check if a command was provided
     if args.command:

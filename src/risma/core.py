@@ -229,21 +229,25 @@ class AquariusWebPortal:
             df_soil['depth'] = df_soil['label'].apply(self.extract_depth)
             df_soil['sensor'] = df_soil['label'].apply(self.extract_sensor)
             
-            # Filter df based on sensors
-            if isinstance(sensors, list):
+            # Filter df based on sensors (only if provided)
+            if sensors is None or (isinstance(sensors, list) and len(sensors) == 0):
+                pass  # no filtering
+            elif isinstance(sensors, list):
                 df_soil = df_soil[df_soil.sensor.isin(sensors)]
             elif isinstance(sensors, str):
                 df_soil = df_soil[df_soil.sensor == sensors]
             else:
-                raise Exception('sensors must be a string or a list of strings.')
+                raise Exception('sensors must be a string, a list of strings, or None.')
             
-            # Filter df based on depths
-            if isinstance(depths, list):
+            # Filter df based on depths (only if provided)
+            if depths is None or (isinstance(depths, list) and len(depths) == 0):
+                pass  # no filtering
+            elif isinstance(depths, list):
                 df_soil = df_soil[df_soil.depth.isin(depths)]
             elif isinstance(depths, str):
                 df_soil = df_soil[df.depth == depths]
             else:
-                raise Exception('depths must be a string or a list of strings.')
+                raise Exception('depths must be a string, a list of strings, or None.')
 
             # Put together both dfs
             df = pd.concat([df_air, df_soil])
@@ -345,8 +349,7 @@ class AquariusWebPortal:
                 df = df[df.loc_id.isin(stations)]
             else:
                 raise Exception('stations must be a string or a list of strings.')
-        else:
-            print("No stations provided! Skipping filtering by stations.")
+        # If stations not provided, return unfiltered list
         
         return df
 
