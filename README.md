@@ -10,7 +10,7 @@ The network captures a wide range of data points every 15 minutes, including:
 
 As of 2015, the network consists of 22 stations located in Manitoba, Saskatchewan, and Ontario. The data from these stations is crucial for applications such as flood and yield forecasting, as well as for validating satellite-based environmental products.
 
-Please see our quick user guide for more information on how to use this Portal by [clicking here](https://agrifood.aquaticinformatics.net/AQWebPortal/Data/GetFile/GettingStartedGuide)
+Please see the quick user guide for more information on how to use this Portal by [clicking here](https://agrifood.aquaticinformatics.net/AQWebPortal/Data/GetFile/GettingStartedGuide)
 
 ## Getting Started
 
@@ -60,72 +60,83 @@ The `tutorial.ipynb` notebook provides a comprehensive guide to using RISMA. To 
 
 ### Command-Line Interface (CLI)
 
-The RISMA package includes a powerful command-line interface (CLI) for interacting with the data portal. It can be run as a step-by-step interactive session or by executing individual commands.
+RISMA ships with an interactive CLI that guides you from choosing parameters all the way to downloading data. You can use the guided wizard, or run individual subcommands.
 
-To start the interactive session, simply run:
+Run the guided wizard:
 
 ```bash
 risma
 ```
 
-This will launch a stateful session that guides you through the data selection and download process. Inside the session, you can run commands like `params --list-only`, `status`, or `exit`.
+This launches a fully interactive (arrow keys/checkboxes) flow:
 
-Alternatively, you can run each command directly from your shell by prefixing it with `risma`, for example: `risma params --list-only`.
+1) Select parameters → 2) Select stations (grouped by province) → 3) Review/filter datasets (sensors, depths) → 4) Configure export options (date range, format, time zone, etc.) → 5) Download.
 
-**Global Options:**
+Selections persist per server under `~/.risma/state_<host>.json`. You can resume later and `risma status` will show your current selections.
 
-*   `--server`: Specify the Aquarius server URL (defaults to `agrifood.aquaticinformatics.net`).
-*   `--verbose` or `-v`: Enable detailed output.
+Alternatively, you can use subcommands directly:
 
-You can get help on any command or subcommand by using the `-h` or `--help` flag:
+- Global options:
+  - `--server`, `-s`: Aquarius server (default: `agrifood.aquaticinformatics.net`)
+  - `--verbose`, `-v`: Verbose output
+
+Get help:
 
 ```bash
 risma --help
 risma params --help
 ```
 
-#### Step-by-Step Workflow
+#### Workflow (subcommands)
 
-The CLI is designed around a 4-step workflow.
+1. Parameters (`params`)
+- Interactive (default): `risma params`
+- Select explicitly: `risma params --select "Air Temp" "Soil Moisture"`
+- List only: `risma params --list-only`
 
-**1. Parameters Step (`params`)**
+2. Stations (`stations`)
+- Interactive (default): `risma stations`
+  - Stations are grouped by Province and naturally sorted by ID (e.g., MB1, MB2, …, MB10)
+- Select explicitly: `risma stations --select RISMA_MB1 RISMA_MB2`
 
-Load and select the parameters you are interested in (e.g., "Air Temp", "Soil Moisture").
+3. Datasets (`datasets`)
+- Interactive filtering: `risma datasets`
+  - Shows datasets for your selections
+  - Optional filters: sensors and depths
+- List only: `risma datasets --list-only`
 
-*   **Load:** `params --list-only` - Shows all available parameters
-*   **Select:** `params --select "Air Temp" "Soil Moisture"` - Select specific parameters
-*   **Interactive:** `params` - Shows parameters with current selections marked
+4. Export Options (`export`)
+- Configure everything needed for export and reuse later:
+  - Date range: Entire, Overlapping, Last 7/30 days, Last 6 months, Last 1 year, or Custom (with HH:MM times)
+  - TimeZone: friendly list (UTC, UTC-6 (CST), UTC+10 (AEST), …) or “Server default (undefined)”
+  - Calendar: CALENDARYEAR/MONTH/WEEK/DAY or undefined
+  - Interval: PointsAsRecorded/Hourly/Daily/Weekly/Monthly or undefined
+  - Step: integer (leave empty for undefined)
+  - TimeAligned: True/False/undefined
+  - RoundData: True/False/undefined
+  - Calculation: Instantaneous/Mean/Sum/Min/Max or undefined
+  - Extra data types: grade, approval, qualifier, interpolation_type (multi-select)
+  - Export format: csv, excel, json (or undefined)
+  - Output folder: where files will be written
 
-**2. Stations Step (`stations`)**
+5. Download (`download`)
+- Uses your saved export options. You can still override with flags (e.g., `--start-date/--end-date`).
+- Files are written per-station; extension matches selected format (`.csv`, `.xlsx`, `.json`).
+- Date range behavior:
+  - Entire: each dataset’s full period (per-dataset start/end)
+  - Overlapping: intersection across selected datasets
+  - Presets: Days7/Days30/Months6/Years1 map to the server’s DateRange
+  - Custom: sends `StartTime`/`EndTime` with HH:MM precision
 
-Load and select the monitoring stations.
-
-*   **Load:** `stations --list-only` - Shows all available stations
-*   **Select:** `stations --select RISMA_MB1 RISMA_MB2` - Select specific stations
-*   **Interactive:** `stations` - Shows stations with current selections marked
-
-**3. Datasets Step (`datasets`)**
-
-Find available datasets based on your selected parameters and stations. You can further filter by sensor and depth.
-
-*   **Load:** `datasets --list-only` - Shows available datasets based on selections
-*   **Filter:** `datasets --sensors average --depths "0 to 5 cm"` - Add filters
-*   **Interactive:** `datasets` - Shows datasets ready for download
-
-**4. Download Step (`download`)**
-
-Download the time-series data for the selected datasets.
-
-*   **Execute:** `download --start-date 2024-01-01 --end-date 2024-01-31`
-*   **Default:** `download` - Downloads last 7 days
-
-#### Utility Commands
-
-The following commands are also available (primarily for interactive mode):
+#### Status and Reset
 
 ```bash
-status  # Show your current selections (parameters, stations, etc.).
-reset   # Clear all your selections and start over.
-help    # Display help information.
-exit    # Exit the interactive session.
+risma status  # Show server, selections, date range, export options, and output folder
+risma reset   # Clear all selections and export options
 ```
+
+### Notes
+
+- Interactive UI requires the `questionary` library (installed with RISMA).
+- “Server default (undefined)” means the option is omitted in the export request so the server uses its default.
+- The CLI stores state per server at `~/.risma/state_<host>.json`.
